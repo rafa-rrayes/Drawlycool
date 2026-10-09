@@ -6,6 +6,16 @@ A hand-drawn whiteboard for macOS, built on the open-source [Excalidraw](https:/
 - Canvases can be shared: host them from your Mac, or connect to someone else's server and draw together live.
 - No library, no sign-up, no socials, no cloud. Local canvases work fully offline because fonts and assets are bundled.
 
+## Install
+
+Requires a Mac with Apple silicon and macOS 12 or later. To install or update, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rafa-rrayes/Drawlycool/main/install.sh | bash
+```
+
+Or download `Drawlycool.dmg` from the [latest release](https://github.com/rafa-rrayes/Drawlycool/releases/latest) and drag the app to Applications. The app is not notarized. On first launch, macOS will say it can't verify the developer. Open it anyway from System Settings → Privacy & Security → *Open Anyway*. The install script skips this step.
+
 ## Usage
 
 | Action | How |
@@ -79,4 +89,4 @@ Layout:
 - `src/RemoteCanvasEditor.tsx`: the same editor connected to a server, with reconcile, cursors, follow and reconnect.
 - `src/Panels.tsx`: the Connect, Host and profile dialogs.
 
-The app is ad-hoc signed, not notarized. If you share the `.dmg` with another Mac, the recipient has to right-click → Open the first time.
+The app is ad-hoc signed, not notarized (see *Install*). To publish a release, run `npm run dist` and attach `src-tauri/target/release/bundle/dmg/*.dmg` as `Drawlycool.dmg`. The install script always downloads `releases/latest/download/Drawlycool.dmg`.
