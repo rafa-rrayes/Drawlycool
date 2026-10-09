@@ -1,0 +1,33 @@
+[package]
+name = "drawlycool-server"
+version = "1.0.0"
+description = "Sync server for Drawlycool: hosts canvases that several people edit live"
+authors = ["Rafa <rafa@rayes.com.br>"]
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "drawlycool_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "drawlycool-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tokio-tungstenite = "0.30.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

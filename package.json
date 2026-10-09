@@ -1,0 +1,30 @@
+{
+  "name": "drawlycool",
+  "productName": "Drawlycool",
+  "version": "1.0.0",
+  "description": "Hand-drawn whiteboard for macOS with local and shared canvases, built on the Excalidraw editor",
+  "author": "Rafa <rafa@rayes.com.br>",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/copy-assets.mjs",
+    "dev": "tauri dev",
+    "dev:web": "node scripts/copy-assets.mjs && vite",
+    "build:web": "node scripts/copy-assets.mjs && tsc --noEmit && vite build",
+    "dist": "tauri build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/cli": "2.12.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "roughjs": "4.6.4",
+    "typescript": "5.9.3",
+    "vite": "8.1.2"
+  }
+}
