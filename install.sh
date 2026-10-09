@@ -42,7 +42,7 @@ if pgrep -qf "$DEST/$APP/Contents/MacOS/"; then
   done
 fi
 
-echo "Installing to $DEST/$APP…"
+echo "Installing to ${DEST}/${APP}…"
 rm -rf "${DEST:?}/$APP"
 ditto "$mnt/$APP" "$DEST/$APP"
 # The app is ad-hoc signed, not notarized: skip Gatekeeper's "unidentified developer" block.
