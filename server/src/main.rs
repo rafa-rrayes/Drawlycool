@@ -16,14 +16,16 @@ Options:
                     (e.g. https://draw.example.com behind a TLS proxy)
 
 The access token is read from DRAWLYCOOL_TOKEN, or generated once and kept in
-<data>/token.";
+<data>/token. DRAWLYCOOL_NAME and DRAWLYCOOL_PUBLIC_URL can stand in for --name
+and --public-url (handy in containers).";
 
 fn main() {
     let mut data = PathBuf::from("drawlycool-data");
     let mut port: u16 = 4180;
     let mut host: IpAddr = [0, 0, 0, 0].into();
-    let mut name = "Drawlycool server".to_owned();
-    let mut public_url: Option<String> = None;
+    let env = |key: &str| std::env::var(key).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let mut name = env("DRAWLYCOOL_NAME").unwrap_or_else(|| "Drawlycool server".to_owned());
+    let mut public_url: Option<String> = env("DRAWLYCOOL_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_owned());
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -66,7 +68,7 @@ fn main() {
         println!("Canvases: {}", data.display());
         println!("Invite link: drawlycool://connect?server={}&token={token}", encode(&url));
 
-        let _ = tokio::signal::ctrl_c().await;
+        shutdown_signal().await;
         println!("Saving and stopping…");
         server.stop().await;
     });
@@ -79,6 +81,21 @@ fn encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Ctrl-C, or SIGTERM from `docker stop` / systemd.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn fail(msg: &str) -> ! {

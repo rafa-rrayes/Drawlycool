@@ -50,7 +50,35 @@ In a shared canvas you see everyone's cursors, selections and names. Click someo
 
 **Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the Host panel issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless the server sits behind a TLS proxy, so stay on a trusted network or Tailscale/VPN. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
 
+### Deploy a server for your team
+
+On any Linux server with a domain pointing at it (ports 80 and 443 open), run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rafa-rrayes/Drawlycool/main/deploy.sh | sudo bash -s -- --domain draw.example.com --name "Acme"
+```
+
+The script:
+- installs Docker if it's missing;
+- starts the server and [Caddy](https://caddyserver.com), which gets an HTTPS certificate automatically;
+- prints the invite link and saves it in `/opt/drawlycool/invite.txt`.
+
+To run plain HTTP on port 4180 instead, for a LAN or VPN, leave out `--domain`. Run the same command again to update. Canvases and the token are kept in a Docker volume. Other options: `--url`, `--port`, `--dir`, and `--reset-token`, which issues a new token and stops old invite links from working.
+
+Or run the image directly:
+
+```sh
+docker run -d --name drawlycool --restart unless-stopped -p 4180:4180 -v drawlycool:/data \
+  -e DRAWLYCOOL_NAME="Acme" -e DRAWLYCOOL_PUBLIC_URL=http://10.0.0.5:4180 \
+  ghcr.io/rafa-rrayes/drawlycool-server
+docker logs drawlycool   # shows the invite link
+```
+
+The image is built for amd64 and arm64 from `server/Dockerfile` by `.github/workflows/server-image.yml`. It is about 36 MB, runs as a non-root user, and saves on `docker stop`.
+
 ### Standalone server
+
+Without Docker:
 
 ```sh
 cd server
@@ -58,7 +86,7 @@ cargo run --release -- --data ./drawlycool-data --port 4180 --name "Studio"
 # prints: Invite link: drawlycool://connect?server=…&token=…
 ```
 
-Options: `--data <dir>`, `--port <port>` (default 4180), `--host <ip>` (default 0.0.0.0), `--name <name>`, and `--public-url <url>` (the URL guests use, e.g. `https://draw.example.com` behind a TLS reverse proxy that forwards WebSockets). The token comes from `DRAWLYCOOL_TOKEN`, or is generated once into `<data>/token`. Ctrl-C saves and stops.
+Options: `--data <dir>`, `--port <port>` (default 4180), `--host <ip>` (default 0.0.0.0), `--name <name>`, and `--public-url <url>` (the URL guests use, e.g. `https://draw.example.com` behind a TLS reverse proxy that forwards WebSockets). `DRAWLYCOOL_NAME` and `DRAWLYCOOL_PUBLIC_URL` work in place of those two flags. The token comes from `DRAWLYCOOL_TOKEN`, or is generated once into `<data>/token`. Ctrl-C or SIGTERM saves and stops.
 
 Server data uses the same format as the app: `index.json` plus one `<id>.excalidraw` per canvas. Scenes are saved about a second after the last edit. Deleted elements are pruned after 24 hours.
 
