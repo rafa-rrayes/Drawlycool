@@ -1,6 +1,6 @@
 //! Standalone sync server: `drawlycool-server --data ./canvases --port 4180`.
 
-use drawlycool_server::{new_token, Config, Server};
+use drawlycool_server::{invite_link, new_token, Config, Server};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
@@ -66,21 +66,12 @@ fn main() {
         });
         println!("Drawlycool server listening on {}", server.local_addr);
         println!("Canvases: {}", data.display());
-        println!("Invite link: drawlycool://connect?server={}&token={token}", encode(&url));
+        println!("Invite link: {}", invite_link(&url, &token, None));
 
         shutdown_signal().await;
         println!("Saving and stopping…");
         server.stop().await;
     });
-}
-
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 /// Ctrl-C, or SIGTERM from `docker stop` / systemd.

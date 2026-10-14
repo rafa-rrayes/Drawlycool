@@ -463,7 +463,11 @@ export function RemoteCanvasEditor({
   // ------------------------------------------------------------ chrome
 
   const copyInvite = useCallback(async () => {
-    await desktop.copyText(await desktop.servers.inviteLink(serverId, canvasId));
+    try {
+      await desktop.copyText(await desktop.servers.inviteLink(serverId, canvasId));
+    } catch (err) {
+      return desktop.showError("Couldn’t copy the invite link", String(err));
+    }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }, [serverId, canvasId]);

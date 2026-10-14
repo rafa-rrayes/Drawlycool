@@ -95,7 +95,7 @@ export function ConnectPanel({
             className="form__input"
             autoFocus
             spellCheck={false}
-            placeholder="drawlycool://connect?server=…"
+            placeholder="drawlycool://…"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
           />
@@ -142,6 +142,16 @@ export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChang
     desktop.host.status().then(setStatus);
   }, []);
 
+  // Watch for cloudflared being installed and for the tunnel coming up.
+  const tunnelState = status?.enabled && status.running && status.internet ? status.tunnel.state : "off";
+  useEffect(() => {
+    if (tunnelState === "ready") onChanged();
+    if (tunnelState !== "missing" && tunnelState !== "starting") return;
+    const timer = window.setInterval(() => desktop.host.status().then(setStatus), 1500);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tunnelState]);
+
   const update = async (patch: Parameters<typeof desktop.host.update>[0]) => {
     setBusy(true);
     setError(null);
@@ -182,11 +192,37 @@ export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChang
 
         <p className="form__help">
           Canvases you create under <em>{status.name || "this Mac"}</em> on the Welcome screen can be opened and
-          edited live by anyone with the invite link, while this Mac is awake and Drawlycool is open. Works on the same
-          network, or from anywhere over Tailscale or a VPN.
+          edited live by anyone with the invite link, while this Mac is awake and Drawlycool is open.
         </p>
 
         {on && status.running && (
+          <div className="form__label">
+            Who can join
+            <div className="segmented" role="group">
+              {[
+                { internet: true, label: "Anyone, over the internet" },
+                { internet: false, label: "Same network or VPN" },
+              ].map((o) => (
+                <button
+                  key={o.label}
+                  type="button"
+                  className={`segmented__option${status.internet === o.internet ? " segmented__option--on" : ""}`}
+                  aria-pressed={status.internet === o.internet}
+                  disabled={busy}
+                  onClick={() => status.internet !== o.internet && update({ internet: o.internet })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {on && status.running && status.internet && (
+          <InternetInvite status={status} busy={busy} copied={copied} onCopy={copyInvite} onRetry={() => update({ internet: true })} />
+        )}
+
+        {on && status.running && !status.internet && (
           <>
             <label className="form__label">
               Invite people with
@@ -272,6 +308,77 @@ export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChang
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** The invite for "Anyone, over the internet": install steps until cloudflared is there, then the link. */
+function InternetInvite({
+  status,
+  busy,
+  copied,
+  onCopy,
+  onRetry,
+}: {
+  status: HostStatus;
+  busy: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onRetry: () => void;
+}) {
+  const [copiedCommand, setCopiedCommand] = useState(false);
+  const tunnel = status.tunnel;
+
+  if (tunnel.state === "missing") {
+    const copyCommand = async () => {
+      await desktop.copyText(status.installCommand);
+      setCopiedCommand(true);
+      window.setTimeout(() => setCopiedCommand(false), 1600);
+    };
+    return (
+      <div className="setup">
+        <p className="setup__title">To host over the internet, install cloudflared</p>
+        <p className="form__help">
+          It’s Cloudflare’s free connector: no account, no router settings. Paste this in Terminal, once:
+        </p>
+        <div className="invite">
+          <code className="invite__url invite__url--wrap">{status.installCommand}</code>
+          <button className="text-button text-button--primary" onClick={copyCommand}>
+            {copiedCommand ? "Copied!" : "Copy"}
+          </button>
+        </div>
+        <p className="form__help setup__waiting">Waiting for cloudflared… your invite link shows up here by itself.</p>
+      </div>
+    );
+  }
+
+  if (tunnel.state === "failed") {
+    return (
+      <div className="setup">
+        <p className="form__error">{tunnel.error}</p>
+        <div>
+          <button className="text-button text-button--primary" disabled={busy} onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const ready = tunnel.state === "ready";
+  return (
+    <>
+      <div className="invite">
+        <code className={`invite__url${ready ? "" : " invite__url--pending"}`}>
+          {ready ? status.inviteUrl.replace(/^https:\/\//, "") : "Getting a link from Cloudflare…"}
+        </code>
+        <button className="text-button text-button--primary" disabled={!ready} onClick={onCopy}>
+          {copied ? "Copied!" : "Copy invite link"}
+        </button>
+      </div>
+      <p className="form__help">
+        Free, through Cloudflare. The address changes each time Drawlycool restarts, so send a fresh link then.
+      </p>
+    </>
   );
 }
 

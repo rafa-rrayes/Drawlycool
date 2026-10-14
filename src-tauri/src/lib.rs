@@ -1,5 +1,6 @@
 mod host;
 mod network;
+mod tunnel;
 
 #[cfg(debug_assertions)]
 mod e2e;
@@ -327,6 +328,7 @@ fn exit_after_cleanup(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         network::close_all(&app, Duration::from_millis(1500)).await;
         let _ = tokio::time::timeout(Duration::from_secs(4), host::stop(&app)).await;
+        host::stop_tunnel(&app);
         app.exit(0);
     });
 }

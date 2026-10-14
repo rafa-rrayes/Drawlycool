@@ -53,11 +53,20 @@ pub struct HostConfig {
     pub name: String,
     /// Address put in invite links (an IP or a `.local` name).
     pub invite_address: Option<String>,
+    /// Invite over the internet through a Cloudflare tunnel instead.
+    pub internet: bool,
 }
 
 impl Default for HostConfig {
     fn default() -> Self {
-        Self { enabled: false, port: 4180, token: String::new(), name: String::new(), invite_address: None }
+        Self {
+            enabled: false,
+            port: 4180,
+            token: String::new(),
+            name: String::new(),
+            invite_address: None,
+            internet: true,
+        }
     }
 }
 
@@ -221,14 +230,15 @@ pub struct ServerView {
 }
 
 #[tauri::command]
-pub fn list_servers(net: Net_) -> Vec<ServerView> {
+pub fn list_servers(net: Net_, host: State<host::HostState>) -> Vec<ServerView> {
     let config = net.config();
     let mut list = Vec::new();
     if host::is_running() {
         list.push(ServerView {
             id: HOST_ID.into(),
             name: config.host.name.clone(),
-            url: host::invite_url(&config.host),
+            // Empty while the internet link is on its way.
+            url: host::invite_url(&config.host, &host).unwrap_or_default(),
             is_host: true,
         });
     }
@@ -273,30 +283,22 @@ pub fn remove_server(net: Net_, id: String) -> Result<()> {
     net.update_config(|c| c.servers.retain(|s| s.id != id)).map(|_| ())
 }
 
-/// `drawlycool://connect?server=…&token=…[&canvas=…]` for a server or canvas.
+/// The `drawlycool://` invite link for a server or one of its canvases.
 #[tauri::command]
-pub fn invite_link(net: Net_, server_id: String, canvas_id: Option<String>) -> Result<String> {
+pub fn invite_link(
+    net: Net_,
+    host: State<host::HostState>,
+    server_id: String,
+    canvas_id: Option<String>,
+) -> Result<String> {
     let config = net.config();
     let (url, token) = if server_id == HOST_ID {
-        (host::invite_url(&config.host), config.host.token.clone())
+        (host::invite_url(&config.host, &host)?, config.host.token.clone())
     } else {
         let s = config.servers.iter().find(|s| s.id == server_id).ok_or("Unknown server")?;
         (s.url.clone(), s.token.clone())
     };
-    let mut link = format!("drawlycool://connect?server={}&token={}", encode(&url), encode(&token));
-    if let Some(id) = canvas_id {
-        link.push_str(&format!("&canvas={}", encode(&id)));
-    }
-    Ok(link)
-}
-
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    Ok(drawlycool_server::invite_link(&url, &token, canvas_id.as_deref()))
 }
 
 #[tauri::command]

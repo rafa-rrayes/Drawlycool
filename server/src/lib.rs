@@ -56,9 +56,57 @@ pub struct Config {
     pub name: String,
 }
 
-/// Generates a random access token.
+/// Generates a random access token: 122 random bits as 22 letters and digits.
 pub fn new_token() -> String {
-    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut n = uuid::Uuid::new_v4().as_u128();
+    (0..22)
+        .map(|_| {
+            let d = DIGITS[(n % 62) as usize] as char;
+            n /= 62;
+            d
+        })
+        .collect()
+}
+
+/// The `drawlycool://` invite link for a server, or for one canvas on it.
+///
+/// Short form: `drawlycool://host[:port]/<token>[/<canvas>]`, where a port
+/// means `http://` and no port means `https://`. That covers LAN servers,
+/// tunnels and TLS deployments. Anything else (an https port, a path, an IPv6
+/// literal) uses `drawlycool://connect?server=…&token=…[&canvas=…]`.
+pub fn invite_link(server_url: &str, token: &str, canvas: Option<&str>) -> String {
+    let url = server_url.trim().trim_end_matches('/');
+    let (https, authority) = match (url.strip_prefix("https://"), url.strip_prefix("http://")) {
+        (Some(rest), _) => (true, rest),
+        (_, Some(rest)) => (false, rest),
+        _ => (false, ""),
+    };
+    let has_port = authority.rsplit_once(':').is_some_and(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let plain_host = !authority.is_empty() && !authority.contains(['/', '[', '@', '?', '#']);
+    let safe = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b));
+    if plain_host && https != has_port && safe(token) && canvas.is_none_or(safe) {
+        let mut link = format!("drawlycool://{authority}/{token}");
+        if let Some(c) = canvas {
+            link.push('/');
+            link.push_str(c);
+        }
+        return link;
+    }
+    let mut link = format!("drawlycool://connect?server={}&token={}", encode(url), encode(token));
+    if let Some(c) = canvas {
+        link.push_str(&format!("&canvas={}", encode(c)));
+    }
+    link
+}
+
+fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------------ state
@@ -653,5 +701,41 @@ impl Server {
         for room in self.hub.all_rooms() {
             save_room(&self.hub, &room).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::*;
+
+    #[test]
+    fn tokens_are_short_and_url_safe() {
+        let t = new_token();
+        assert_eq!(t.len(), 22);
+        assert!(t.bytes().all(|b| b.is_ascii_alphanumeric()));
+        assert_ne!(t, new_token());
+    }
+
+    #[test]
+    fn invite_links_are_short_when_they_can_be() {
+        let link = |url, canvas| invite_link(url, "Tok3n", canvas);
+        assert_eq!(link("https://tidy-otter.trycloudflare.com", None), "drawlycool://tidy-otter.trycloudflare.com/Tok3n");
+        assert_eq!(link("https://draw.example.com/", Some("c-1")), "drawlycool://draw.example.com/Tok3n/c-1");
+        assert_eq!(link("http://Rafas-Mac.local:4180", None), "drawlycool://Rafas-Mac.local:4180/Tok3n");
+        assert_eq!(link("http://192.168.1.4:4180", Some("c-1")), "drawlycool://192.168.1.4:4180/Tok3n/c-1");
+        // Port and scheme don't match the short form's rule: spelled out.
+        assert_eq!(link("http://example.com", None), "drawlycool://connect?server=http%3A%2F%2Fexample.com&token=Tok3n");
+        assert_eq!(
+            link("https://example.com:8443", Some("c-1")),
+            "drawlycool://connect?server=https%3A%2F%2Fexample.com%3A8443&token=Tok3n&canvas=c-1"
+        );
+        assert_eq!(
+            link("https://example.com/draw", None),
+            "drawlycool://connect?server=https%3A%2F%2Fexample.com%2Fdraw&token=Tok3n"
+        );
+        assert_eq!(
+            invite_link("https://example.com", "a b", None),
+            "drawlycool://connect?server=https%3A%2F%2Fexample.com&token=a%20b"
+        );
     }
 }

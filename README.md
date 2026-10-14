@@ -46,9 +46,14 @@ Shared canvases live on a **server**. Any Mac running the app can act as one, or
 
 In a shared canvas you see everyone's cursors, selections and names. Click someone's avatar to follow their viewport. Edits merge per element, so if two people move the *same* shape at once, one change wins. If the connection drops, the canvas turns read-only with a *Reconnecting…* banner until it comes back. There is no offline editing of shared canvases.
 
-**Reachability.** The Host panel lists this Mac's addresses: the `.local` name and LAN IP for people on the same network, the Tailscale IP for people on your tailnet, and a public IP if you have one. Pick the one your guests can reach. They are embedded in the invite link. A hosting Mac must be awake with Drawlycool open. The first time you host, macOS may ask to allow incoming connections (firewall) and Local Network access.
+**Reachability.** Under *Who can join* in the Host panel:
 
-**Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the Host panel issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless the server sits behind a TLS proxy, so stay on a trusted network or Tailscale/VPN. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
+- **Anyone, over the internet** (the default). Drawlycool runs a free [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), which gives this Mac a public `https://….trycloudflare.com` address without an account or router setup. It needs `cloudflared`, which isn't bundled. If it's missing, the panel shows a one-line install command (`brew install cloudflared`, or a download into `~/.local/bin` if you don't have Homebrew) and picks it up as soon as it's installed. The address changes each time Drawlycool restarts, so send a fresh link then.
+- **Same network or VPN.** Pick one of this Mac's addresses: the `.local` name or LAN IP for people on the same network, the Tailscale IP for people on your tailnet, or a public IP if you have one.
+
+Invite links look like `drawlycool://tidy-otter.trycloudflare.com/<token>`: the host plus the access token, and a canvas id if the link is for one canvas. A port in the link means plain `http://`, no port means `https://`. Older `drawlycool://connect?server=…&token=…` links still work. A hosting Mac must be awake with Drawlycool open. The first time you host, macOS may ask to allow incoming connections (firewall) and Local Network access.
+
+**Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the Host panel issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless it goes through the Cloudflare tunnel or the server sits behind a TLS proxy, so on the *Same network* option stay on a trusted network or Tailscale/VPN. The tunnel encrypts traffic between guests and Cloudflare, but Cloudflare can see it. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
 
 ### Deploy a server for your team
 
@@ -109,6 +114,7 @@ Layout:
 - `src-tauri/src/lib.rs`: window, native menu, commands, and the quit-time save flush.
 - `src-tauri/src/network.rs`: saved servers, invite links, and live sessions. All networking runs in Rust; the webview only sees a channel.
 - `src-tauri/src/host.rs`: runs the server inside the app when hosting.
+- `src-tauri/src/tunnel.rs`: finds `cloudflared` and runs the Cloudflare quick tunnel for *Anyone, over the internet*.
 - `src-tauri/src/e2e.rs`: a test hook that runs JS in the webview. It only exists in debug builds.
 - `src/desktop.ts`: the frontend's bridge to Rust. Scenes are sent as raw bytes, not JSON.
 - `src/platform.ts`: routes external links, "save to disk" downloads and the window title to native equivalents.

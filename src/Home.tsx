@@ -371,7 +371,11 @@ function ServerSection({
   }, [load, tick]);
 
   const copyInvite = async (canvasId?: string) => {
-    await desktop.copyText(await desktop.servers.inviteLink(server.id, canvasId));
+    try {
+      await desktop.copyText(await desktop.servers.inviteLink(server.id, canvasId));
+    } catch (err) {
+      return alertError("Couldn’t copy the invite link", err);
+    }
     if (!canvasId) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
@@ -465,7 +469,7 @@ function ServerSection({
       </div>
       <p className="home__section-meta">
         <span className={`status-dot ${error ? "status-dot--off" : "status-dot--on"}`} />
-        {server.isHost ? `Hosted on this Mac · ${server.url.replace(/^https?:\/\//, "")}` : server.url.replace(/^https?:\/\//, "")}
+        {[server.isHost && "Hosted on this Mac", server.url.replace(/^https?:\/\//, "")].filter(Boolean).join(" · ")}
       </p>
 
       {error ? (
