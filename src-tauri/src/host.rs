@@ -2,6 +2,7 @@
 //! open the canvases in `<data>/hosted/`.
 
 use crate::network::{HostConfig, Net};
+use crate::tunnel::{self, Phase, Tunnel};
 use drawlycool_server::{new_token, Config, Server};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -16,6 +17,7 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 pub struct HostState {
     server: tokio::sync::Mutex<Option<Server>>,
     error: std::sync::Mutex<Option<String>>,
+    tunnel: Tunnel,
 }
 
 pub fn is_running() -> bool {
@@ -71,7 +73,17 @@ fn local_host_name() -> Option<String> {
 }
 
 /// The URL other people use to reach this Mac.
-pub fn invite_url(config: &HostConfig) -> String {
+pub fn invite_url(config: &HostConfig, host: &HostState) -> Result<String> {
+    if config.internet {
+        return host
+            .tunnel
+            .url()
+            .ok_or_else(|| "The internet link isn’t ready yet. Open Host on the Welcome screen to check on it.".into());
+    }
+    Ok(lan_url(config))
+}
+
+fn lan_url(config: &HostConfig) -> String {
     let address = config
         .invite_address
         .clone()
@@ -89,12 +101,17 @@ pub struct HostStatus {
     port: u16,
     name: String,
     invite_address: Option<String>,
+    /// Empty while the internet link is on its way.
     invite_url: String,
     addresses: Vec<Address>,
     error: Option<String>,
+    internet: bool,
+    tunnel: Phase,
+    install_command: String,
 }
 
 fn status(net: &Net, host: &HostState) -> HostStatus {
+    sync_tunnel(net, host, false);
     let c = net.config().host;
     HostStatus {
         enabled: c.enabled,
@@ -102,10 +119,31 @@ fn status(net: &Net, host: &HostState) -> HostStatus {
         port: c.port,
         name: c.name.clone(),
         invite_address: c.invite_address.clone(),
-        invite_url: invite_url(&c),
+        invite_url: invite_url(&c, host).unwrap_or_default(),
         addresses: addresses(),
         error: host.error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        internet: c.internet,
+        tunnel: host.tunnel.phase(),
+        install_command: tunnel::install_command(),
     }
+}
+
+/// Runs the Cloudflare tunnel exactly when hosting is up in internet mode.
+/// It outlives server restarts (name or token changes) so the address stays.
+fn sync_tunnel(net: &Net, host: &HostState, retry: bool) {
+    let c = net.config().host;
+    let pid_file = net.data_dir.join("cloudflared.pid");
+    if c.enabled && c.internet && is_running() {
+        host.tunnel.ensure(c.port, retry, &pid_file);
+    } else {
+        host.tunnel.stop(&pid_file);
+    }
+}
+
+/// Closes the tunnel when the app quits.
+pub fn stop_tunnel(app: &AppHandle) {
+    let pid_file = app.state::<Net>().data_dir.join("cloudflared.pid");
+    app.state::<HostState>().tunnel.stop(&pid_file);
 }
 
 async fn start(app: &AppHandle) -> Result<()> {
@@ -140,6 +178,7 @@ async fn start(app: &AppHandle) -> Result<()> {
             *slot = Some(server);
             RUNNING.store(true, Ordering::SeqCst);
             *host.error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            sync_tunnel(&net, &host, false);
             Ok(())
         }
         Err(e) => {
@@ -187,6 +226,9 @@ pub struct HostPatch {
     port: Option<u16>,
     name: Option<String>,
     invite_address: Option<String>,
+    /// Who can join: anyone over the internet (true) or the local network.
+    /// Setting it to true also retries a failed tunnel.
+    internet: Option<bool>,
     /// Issue a new access token; existing invite links stop working.
     #[serde(default)]
     reset_token: bool,
@@ -213,6 +255,9 @@ pub async fn host_update(app: AppHandle, patch: HostPatch) -> Result<HostStatus>
             if let Some(a) = patch.invite_address.as_deref() {
                 c.host.invite_address = Some(a.trim().to_owned()).filter(|a| !a.is_empty());
             }
+            if let Some(v) = patch.internet {
+                c.host.internet = v;
+            }
         })?
         .host;
 
@@ -228,5 +273,7 @@ pub async fn host_update(app: AppHandle, patch: HostPatch) -> Result<HostStatus>
     } else {
         *app.state::<HostState>().error.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-    Ok(status(&net, &app.state::<HostState>()))
+    let host = app.state::<HostState>();
+    sync_tunnel(&net, &host, patch.internet == Some(true));
+    Ok(status(&net, &host))
 }

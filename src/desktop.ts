@@ -32,15 +32,26 @@ export type RemoteCanvas = CanvasMeta & { peers: Peer[] };
 
 export type HostAddress = { label: string; address: string };
 
+/** The Cloudflare tunnel behind "Anyone, over the internet". */
+export type TunnelPhase =
+  | { state: "off" | "missing" | "starting" }
+  | { state: "ready"; url: string }
+  | { state: "failed"; error: string };
+
 export type HostStatus = {
   enabled: boolean;
   running: boolean;
   port: number;
   name: string;
   inviteAddress: string | null;
+  /** Empty while the internet link is on its way. */
   inviteUrl: string;
   addresses: HostAddress[];
   error: string | null;
+  internet: boolean;
+  tunnel: TunnelPhase;
+  /** Terminal command that installs cloudflared. */
+  installCommand: string;
 };
 
 export type HostPatch = Partial<{
@@ -48,6 +59,7 @@ export type HostPatch = Partial<{
   port: number;
   name: string;
   inviteAddress: string;
+  internet: boolean;
   resetToken: boolean;
 }>;
 
@@ -221,15 +233,22 @@ export const desktop = {
   },
 };
 
-/** Parses `drawlycool://connect?server=…&token=…&canvas=…`. */
+/**
+ * Parses an invite link: `drawlycool://host[:port]/token[/canvas]` (a port
+ * means http, no port https) or `drawlycool://connect?server=…&token=…&canvas=…`.
+ */
 export function parseInvite(link: string): { server: string; token: string; canvas: string | null } | null {
   try {
     const url = new URL(link.trim());
     if (url.protocol !== "drawlycool:") return null;
     const server = url.searchParams.get("server");
-    const token = url.searchParams.get("token");
-    if (!server || !token) return null;
-    return { server, token, canvas: url.searchParams.get("canvas") };
+    if (server) {
+      const token = url.searchParams.get("token");
+      return token ? { server, token, canvas: url.searchParams.get("canvas") } : null;
+    }
+    const [token, canvas] = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    if (!url.host || !token) return null;
+    return { server: `${url.port ? "http" : "https"}://${url.host}`, token, canvas: canvas ?? null };
   } catch {
     return null;
   }
