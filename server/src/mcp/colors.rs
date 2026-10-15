@@ -134,6 +134,30 @@ pub fn luminance(color: &str) -> Option<f64> {
     Some(0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b))
 }
 
+/// WCAG contrast ratio between two colours (1 to 21).
+pub fn contrast(a: &str, b: &str) -> Option<f64> {
+    let (la, lb) = (luminance(a)?, luminance(b)?);
+    Some((la.max(lb) + 0.05) / (la.min(lb) + 0.05))
+}
+
+/// Ink for text drawn in a `stroke`-outlined shape filled with `fill` on a
+/// `canvas` background: the stroke colour when it reads well, else the
+/// darkest shade of its hue, else black.
+pub fn readable_ink(stroke: &str, fill: &str, canvas: &str) -> String {
+    let behind = if fill.eq_ignore_ascii_case(TRANSPARENT) { canvas } else { fill };
+    let ok = |c: &str| contrast(c, behind).is_none_or(|r| r >= 3.0);
+    if ok(stroke) {
+        return stroke.to_owned();
+    }
+    let s = stroke.trim().to_ascii_lowercase();
+    if let Some((_, shades)) = PALETTE.iter().find(|(_, shades)| shades.contains(&s.as_str())) {
+        if ok(shades[4]) {
+            return shades[4].to_owned();
+        }
+    }
+    BLACK.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

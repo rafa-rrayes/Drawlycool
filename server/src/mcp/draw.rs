@@ -218,6 +218,11 @@ pub fn set_label(draft: &mut Draft, owner: &str, content: &str, style: &Style, a
         None => {
             let id = label_id(draft, owner);
             let mut st = style.clone();
+            if st.text_color.is_none() {
+                let fill = model::opt_str(&container, "backgroundColor").unwrap_or(colors::TRANSPARENT);
+                let canvas = draft.background.clone().unwrap_or_else(|| colors::WHITE.into());
+                st.text_color = Some(colors::readable_ink(&style.stroke, fill, &canvas));
+            }
             if model::kind(&container) == "arrow" && !a.has("font_size") {
                 st.font_size = (style.font_size - 4.0).max(14.0);
             }
@@ -435,8 +440,6 @@ pub fn draw_one(draft: &mut Draft, item: &Value, cursor: &mut Cursor, out: &mut 
         style.stroke = colors::resolve("yellow", Slot::Stroke).unwrap_or_default();
         style.fill = colors::resolve("yellow", Slot::Fill).unwrap_or_default();
         style.text_color = Some(colors::BLACK.into());
-        style.text_align = Some("left".into());
-        style.vertical_align = Some("top".into());
         style.font_size = 16.0;
     }
     style.apply(&a, matches!(kind, "rectangle" | "ellipse" | "diamond" | "note" | "frame"))?;

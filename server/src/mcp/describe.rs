@@ -1367,6 +1367,15 @@ pub fn lint_on(elements: &[&Value], touched: &HashSet<String>, background: Optio
             if b == a || kind(el(b)) != "arrow" || paths[b].len() < 2 || !arrow_pairs.insert((a.min(b), a.max(b))) {
                 continue;
             }
+            // Arrows fanning out of (or into) the same shape share a trunk
+            // by design; their overlap isn't a crossing.
+            let (ea, eb) = (el(a), el(b));
+            let shared = ["startBinding", "endBinding"]
+                .iter()
+                .any(|k| model::binding_target(ea, k).is_some_and(|t| model::binding_target(eb, k) == Some(t)));
+            if shared {
+                continue;
+            }
             let c = crossings(&paths[a], &paths[b]);
             if c > 0 {
                 crossed += c;
