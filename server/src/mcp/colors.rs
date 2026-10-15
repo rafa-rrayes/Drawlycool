@@ -155,7 +155,13 @@ pub fn readable_ink(stroke: &str, fill: &str, canvas: &str) -> String {
             return shades[4].to_owned();
         }
     }
-    BLACK.to_owned()
+    plain_ink(behind)
+}
+
+/// Black or white, whichever reads better on `behind`.
+pub fn plain_ink(behind: &str) -> String {
+    let on = |c: &str| contrast(c, behind).unwrap_or(21.0);
+    if on(WHITE) > on(BLACK) { WHITE } else { BLACK }.to_owned()
 }
 
 #[cfg(test)]

@@ -360,7 +360,7 @@ impl OutlineBuilder for Outline<'_> {
 fn glyph_run(pb: &mut sk::PathBuilder, font: &Font, line: &str, size: f64, mut x: f64, y: f64) {
     for c in line.chars() {
         let advance = font.advance(c, size);
-        if let Some((face, glyph)) = font.faces().glyph(c) {
+        if let Some((face, glyph)) = font.glyph(c) {
             let s = size / face.units_per_em() as f64;
             let own = face.glyph_hor_advance(glyph).unwrap_or(0) as f64 * s;
             let sx = if own > 0.0 { s * advance / own } else { s };

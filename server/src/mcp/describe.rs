@@ -987,9 +987,16 @@ fn role(el: &Value, ctx: &Ctx) -> Role {
         },
         "rectangle" | "ellipse" | "diamond" | "image" | "embeddable" | "iframe" => Role::Solid,
         "frame" | "magicframe" => Role::Frame,
+        // A closed line is a drawn shape (a polygon), not a connector.
+        "line" if is_closed_line(el) => Role::Other,
         "arrow" | "line" => Role::Link,
         _ => Role::Other,
     }
+}
+
+fn is_closed_line(el: &Value) -> bool {
+    let pts = model::abs_points(el);
+    pts.len() >= 3 && pts.first().zip(pts.last()).is_some_and(|(a, b)| dist(*a, *b) < 1.0)
 }
 
 /// The drawn path of an arrow or line (curves approximated).
@@ -1275,9 +1282,14 @@ pub fn lint_on(elements: &[&Value], touched: &HashSet<String>, background: Optio
         c.dedup();
         c
     };
+    // Arrows and connected lines; a loose line is decoration (a divider, a
+    // hatch mark) and may cross shapes on purpose.
+    let connects = |e: &Value| {
+        kind(e) == "arrow" || model::binding_target(e, "startBinding").is_some() || model::binding_target(e, "endBinding").is_some()
+    };
     let mut through: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &a in &hot_list {
-        if roles[a] != Role::Link {
+        if roles[a] != Role::Link || !connects(el(a)) {
             continue;
         }
         for b in along(a) {
@@ -1291,7 +1303,7 @@ pub fn lint_on(elements: &[&Value], touched: &HashSet<String>, background: Optio
             continue;
         }
         for a in grid.near(&rects[s]) {
-            if roles[a] == Role::Link && !hot.contains(&a) && passes(a, s) {
+            if roles[a] == Role::Link && connects(el(a)) && !hot.contains(&a) && passes(a, s) {
                 through.entry(a).or_default().push(s);
             }
         }

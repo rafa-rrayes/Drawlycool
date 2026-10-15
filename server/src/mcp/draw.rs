@@ -53,15 +53,17 @@ pub fn fresh_id(draft: &Draft, hint: &str, kind: &str) -> String {
         s if s.is_empty() => kind.to_owned(),
         s => s,
     };
-    if !draft.id_taken(&base) && !base.chars().all(|c| c.is_ascii_digit()) {
+    // Ids of deleted elements can be reused: the new element replaces the
+    // tombstone with a higher version, so every editor takes it.
+    if !draft.exists(&base) && !base.chars().all(|c| c.is_ascii_digit()) {
         return base;
     }
-    (2..).map(|n| format!("{base}-{n}")).find(|id| !draft.id_taken(id)).expect("free id")
+    (2..).map(|n| format!("{base}-{n}")).find(|id| !draft.exists(id)).expect("free id")
 }
 
 fn label_id(draft: &Draft, owner: &str) -> String {
     let id = format!("{owner}-label");
-    if !draft.id_taken(&id) || draft.get(&id).is_some_and(|t| model::container_id(t) == Some(owner)) {
+    if !draft.exists(&id) || draft.get(&id).is_some_and(|t| model::container_id(t) == Some(owner)) {
         return id;
     }
     fresh_id(draft, &id, "label")
@@ -183,6 +185,28 @@ fn common(a: &Args, draft: &Draft, el: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The solid fill showing behind `el`: the topmost filled shape beneath it
+/// that covers its centre (a coloured panel, a blueprint sheet), if any.
+fn backdrop(draft: &Draft, el: &Value) -> Option<String> {
+    let me = model::id(el);
+    let c = model::rect(el).center();
+    let mut found = None;
+    for e in draft.alive() {
+        if model::id(e) == me {
+            break;
+        }
+        let closed_line = model::kind(e) == "line" && model::abs_points(e).first() == model::abs_points(e).last();
+        let shape = matches!(model::kind(e), "rectangle" | "ellipse" | "diamond") || closed_line;
+        let fill = model::opt_str(e, "backgroundColor").filter(|f| colors::rgba(f).is_some_and(|c| c[3] > 0));
+        if shape && model::opt_str(e, "fillStyle").is_none_or(|f| f == "solid") && model::bounds(e).contains(c) {
+            if let Some(f) = fill {
+                found = Some(f.to_owned());
+            }
+        }
+    }
+    found
+}
+
 /// Adds or replaces a container's label.
 pub fn set_label(draft: &mut Draft, owner: &str, content: &str, style: &Style, a: &Args) {
     let existing = draft.get(owner).and_then(model::bound_text_id).filter(|t| draft.exists(t));
@@ -220,7 +244,7 @@ pub fn set_label(draft: &mut Draft, owner: &str, content: &str, style: &Style, a
             let mut st = style.clone();
             if st.text_color.is_none() {
                 let fill = model::opt_str(&container, "backgroundColor").unwrap_or(colors::TRANSPARENT);
-                let canvas = draft.background.clone().unwrap_or_else(|| colors::WHITE.into());
+                let canvas = backdrop(draft, &container).unwrap_or_else(|| draft.background.clone().unwrap_or_else(|| colors::WHITE.into()));
                 st.text_color = Some(colors::readable_ink(&style.stroke, fill, &canvas));
             }
             if model::kind(&container) == "arrow" && !a.has("font_size") {
@@ -492,7 +516,7 @@ pub fn draw_one(draft: &mut Draft, item: &Value, cursor: &mut Cursor, out: &mut 
                 };
                 let (mut w, mut h) = (a.num("width").unwrap_or(aw), a.num("height").unwrap_or(ah));
                 if circle {
-                    let d = a.num("width").or_else(|| a.num("height")).or_else(|| a.num("diameter")).unwrap_or(aw.max(ah));
+                    let d = a.num("width").or_else(|| a.num("height")).or_else(|| a.num("diameter")).or_else(|| a.num("radius").map(|r| 2.0 * r)).unwrap_or(aw.max(ah));
                     (w, h) = (d, d);
                 }
                 let at = position(&a, draft, w, h, || cursor.place(draft, w, h, near))?;
@@ -536,6 +560,15 @@ pub fn draw_one(draft: &mut Draft, item: &Value, cursor: &mut Cursor, out: &mut 
             }
             el["x"] = build::round2(x).into();
             el["y"] = build::round2(y).into();
+            // No colour given: keep text readable on whatever it sits on.
+            if !["color", "stroke", "stroke_color", "border", "line_color", "text_color", "font_color", "label_color"].iter().any(|k| a.has(k)) {
+                if let Some(behind) = backdrop(draft, &el) {
+                    let ink = model::str_of(&el, "strokeColor").to_owned();
+                    if colors::contrast(&ink, &behind).is_some_and(|r| r < 3.0) {
+                        el["strokeColor"] = colors::plain_ink(&behind).into();
+                    }
+                }
+            }
             common(&a, draft, &mut el)?;
             draft.step((x, y + h / 2.0), Some(&id));
             draft.insert(el, Z::Front);
@@ -734,9 +767,17 @@ pub fn update_one(draft: &mut Draft, id: &str, a: &Args, out: &mut Outcome) -> R
     let r0 = model::rect(&el);
     let mut geometry_changed = false;
     if matches!(kind.as_str(), "rectangle" | "ellipse" | "diamond" | "frame" | "image" | "embeddable") {
-        let (w, h) = (a.num("width").unwrap_or(r0.w), a.num("height").unwrap_or(r0.h));
+        let d = a.num("diameter").or_else(|| a.num("radius").map(|r| 2.0 * r));
+        let (w, h) = (a.num("width").or(d).unwrap_or(r0.w), a.num("height").or(d).unwrap_or(r0.h));
         let positional = ["x", "y", "center", "at", "below", "above", "right_of", "left_of", "cx"].iter().any(|k| a.has(k));
-        let (x, y) = if positional { position(a, draft, w, h, || (r0.x, r0.y))? } else { (r0.x, r0.y) };
+        // Resized without a new position: keep the centre where it was.
+        let (x, y) = if positional {
+            position(a, draft, w, h, || (r0.x, r0.y))?
+        } else if d.is_some() {
+            (r0.x + (r0.w - w) / 2.0, r0.y + (r0.h - h) / 2.0)
+        } else {
+            (r0.x, r0.y)
+        };
         if (w, h) != (r0.w, r0.h) {
             draft.update(id, |e| {
                 e["width"] = w.into();
@@ -860,6 +901,61 @@ pub fn update_one(draft: &mut Draft, id: &str, a: &Args, out: &mut Outcome) -> R
 mod tests {
     use super::*;
     use serde_json::{json, Map};
+
+    fn draw_all(d: &mut Draft, specs: Vec<Value>) {
+        let (mut cur, mut out) = (Cursor { last: None }, Outcome::default());
+        for spec in specs {
+            match spec.get("id").and_then(Value::as_str).filter(|id| d.exists(id)) {
+                Some(id) => update_one(d, &id.to_owned(), &Args::of(&spec), &mut out).unwrap(),
+                None => {
+                    draw_one(d, &spec, &mut cur, &mut out, None).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn small_circles_grow_instead_of_breaking_words() {
+        let mut d = Draft::new(Vec::new(), Map::new(), None);
+        draw_all(&mut d, vec![json!({"id": "c", "type": "circle", "center": [0, 0], "diameter": 60, "label": "Thunderstorm", "font_size": 16})]);
+        let c = d.get("c").unwrap();
+        assert!(model::width(c) > 60.0 && model::width(c) == model::height(c));
+        let label = d.get(&model::bound_text_id(c).unwrap()).unwrap();
+        assert!(!model::text_of(label).contains('\n'), "{}", model::text_of(label));
+    }
+
+    #[test]
+    fn diameter_updates_keep_the_centre() {
+        let mut d = Draft::new(Vec::new(), Map::new(), None);
+        draw_all(&mut d, vec![json!({"id": "c", "type": "circle", "center": [100, 100], "diameter": 100}), json!({"id": "c", "diameter": 140})]);
+        let r = model::rect(d.get("c").unwrap());
+        assert_eq!((r.w, r.h, r.center()), (140.0, 140.0, (100.0, 100.0)));
+    }
+
+    #[test]
+    fn deleted_ids_can_be_reused() {
+        let mut d = Draft::new(Vec::new(), Map::new(), None);
+        draw_all(&mut d, vec![json!({"id": "box", "type": "rectangle", "label": "Old"})]);
+        delete_ids(&mut d, &["box".to_owned()], false);
+        draw_all(&mut d, vec![json!({"id": "box", "type": "rectangle", "label": "New"})]);
+        assert!(d.exists("box") && !d.exists("box-2"));
+        assert!(d.exists("box-label"));
+    }
+
+    #[test]
+    fn text_on_a_dark_panel_turns_light() {
+        let mut d = Draft::new(Vec::new(), Map::new(), None);
+        draw_all(&mut d, vec![
+            json!({"id": "bg", "type": "rectangle", "x": 0, "y": 0, "width": 600, "height": 400, "fill": "#1a3a6b", "fill_style": "solid"}),
+            json!({"id": "t", "type": "text", "text": "Hello", "x": 40, "y": 40}),
+            json!({"id": "box", "type": "rectangle", "x": 100, "y": 100, "width": 200, "height": 80, "stroke": "white", "fill": "transparent", "label": "Inside"}),
+            json!({"id": "t2", "type": "text", "text": "Outside", "x": 800, "y": 40}),
+        ]);
+        assert_eq!(model::str_of(d.get("t").unwrap(), "strokeColor"), "#ffffff");
+        let label = d.get(&model::bound_text_id(d.get("box").unwrap()).unwrap()).unwrap();
+        assert_eq!(model::str_of(label, "strokeColor"), "#ffffff");
+        assert_eq!(model::str_of(d.get("t2").unwrap(), "strokeColor"), "#1e1e1e");
+    }
 
     #[test]
     fn moving_both_ends_keeps_an_arrows_route() {

@@ -78,11 +78,6 @@ impl Draft {
         self.get(id).is_some()
     }
 
-    /// Whether the id was ever used, deleted elements included.
-    pub fn id_taken(&self, id: &str) -> bool {
-        self.els.contains_key(id)
-    }
-
     /// Live elements in z-order.
     pub fn alive(&self) -> Vec<&Value> {
         let mut list: Vec<&Value> = self.els.values().filter(|e| !model::is_deleted(e)).collect();

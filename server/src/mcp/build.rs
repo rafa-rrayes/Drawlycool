@@ -351,6 +351,18 @@ pub fn fit_label(container: &mut Value, label: &mut Value) -> Option<(f64, f64)>
     let font = Font::new(model::num(label, "fontFamily") as u32);
     let size = model::opt_num(label, "fontSize").unwrap_or(20.0);
     let kind = model::kind(container).to_owned();
+    let mut grew = None;
+    // Widen the shape rather than break a word in half (circles stay round).
+    let longest = model::original_text(label).split_whitespace().map(|w| font.text_width(w, size)).fold(0.0, f64::max);
+    if kind != "arrow" && longest > label_max_width(container, size) {
+        let (w0, h0) = (model::width(container), model::height(container));
+        let nw = container_dimension(longest, &kind).ceil();
+        container["width"] = nw.into();
+        if kind == "ellipse" && (w0 - h0).abs() < 0.5 {
+            container["height"] = nw.into();
+        }
+        grew = Some((nw, model::height(container)));
+    }
     let wrapped = font.wrap(model::original_text(label), size, label_max_width(container, size));
     let w = font.text_width(&wrapped, size);
     let h = font.text_height(&wrapped, size);
@@ -362,7 +374,6 @@ pub fn fit_label(container: &mut Value, label: &mut Value) -> Option<(f64, f64)>
         place_arrow_label(container, label);
         return None;
     }
-    let mut grew = None;
     if h > label_max_height(container) {
         let nh = container_dimension(h, &kind);
         container["height"] = nh.into();

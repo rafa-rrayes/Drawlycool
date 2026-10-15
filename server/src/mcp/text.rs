@@ -29,6 +29,9 @@ const NUNITO_FILES: &[&[u8]] = fonts!["Nunito-1", "Nunito-3", "Nunito-0", "Nunit
 const COMIC_FILES: &[&[u8]] = fonts!["ComicShanns-0", "ComicShanns-3", "ComicShanns-2", "ComicShanns-1"];
 const LILITA_FILES: &[&[u8]] = fonts!["Lilita-1", "Lilita-0"];
 const LIBERATION_FILES: &[&[u8]] = fonts!["Liberation-0"];
+/// Symbols and emoji none of the editor's fonts have (the browser takes
+/// them from system fonts); monochrome Noto, subset.
+const SYMBOL_FILES: &[&[u8]] = fonts!["NotoSymbols-0", "NotoSymbols2-0", "NotoEmoji-0"];
 
 pub struct Faces {
     faces: Vec<Face<'static>>,
@@ -54,6 +57,7 @@ static NUNITO_FACES: OnceLock<Faces> = OnceLock::new();
 static COMIC_FACES: OnceLock<Faces> = OnceLock::new();
 static LILITA_FACES: OnceLock<Faces> = OnceLock::new();
 static LIBERATION_FACES: OnceLock<Faces> = OnceLock::new();
+static SYMBOL_FACES: OnceLock<Faces> = OnceLock::new();
 
 /// One of Excalidraw's font families, with the metrics the editor uses for it
 /// (`FONT_METADATA`), which can differ from the font file's own.
@@ -91,12 +95,25 @@ impl Font {
         }
     }
 
+    /// The glyph for `c`: from this family, else (like the browser's font
+    /// fallback) from the other bundled families, then symbols and emoji.
+    pub fn glyph(&self, c: char) -> Option<(&'static Face<'static>, GlyphId)> {
+        let others = [
+            faces(&EXCALIFONT_FACES, EXCALIFONT_FILES),
+            faces(&NUNITO_FACES, NUNITO_FILES),
+            faces(&LIBERATION_FACES, LIBERATION_FILES),
+            faces(&COMIC_FACES, COMIC_FILES),
+            faces(&SYMBOL_FACES, SYMBOL_FILES),
+        ];
+        std::iter::once(self.faces()).chain(others).find_map(|f| f.glyph(c))
+    }
+
     /// Advance width of one character at `size` px.
     pub fn advance(&self, c: char, size: f64) -> f64 {
         if c == '\t' {
             return self.advance(' ', size) * 8.0;
         }
-        if let Some((face, glyph)) = self.faces().glyph(c) {
+        if let Some((face, glyph)) = self.glyph(c) {
             let upm = face.units_per_em() as f64;
             let adv = face.glyph_hor_advance(glyph).unwrap_or(0) as f64;
             // Cascadia is wider than the Comic Shanns stand-in.
@@ -242,6 +259,10 @@ mod tests {
         assert_eq!(font.text_height("a\nb", 20.0), 50.0);
         assert!(Font::new(NUNITO).faces().glyph('é').is_some());
         assert!(Font::new(COMIC_SHANNS).faces().glyph('{').is_some());
+        // Missing from the family itself: found in another, or in Noto.
+        for c in ['™', 'Ω', '★', '✕', '①', '🐴'] {
+            assert!(Font::new(LILITA).glyph(c).is_some(), "{c}");
+        }
     }
 
     #[test]
