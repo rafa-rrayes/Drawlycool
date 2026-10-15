@@ -1,3 +1,4 @@
+import { ui } from "./ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaptureUpdateAction,
@@ -479,7 +480,7 @@ export function RemoteCanvasEditor({
     try {
       await desktop.copyText(await desktop.servers.inviteLink(serverId, canvasId));
     } catch (err) {
-      return desktop.showError("Couldn’t copy the invite link", String(err));
+      return ui.alert("Couldn’t copy the invite link", String(err));
     }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);

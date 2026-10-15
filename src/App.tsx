@@ -1,3 +1,4 @@
+import { ui } from "./ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CanvasEditor } from "./CanvasEditor";
 import { Home } from "./Home";
@@ -98,7 +99,8 @@ export function App() {
             await goHome();
             return setPendingNewCanvas(true);
           case "import": {
-            const { imported } = await desktop.importDialog();
+            const { imported, errors } = await desktop.importDialog();
+            if (errors.length) ui.alert("Some files couldn’t be imported", errors.join("\n"));
             if (!imported.length) return;
             await goHome();
             return setRefreshKey((n) => n + 1);

@@ -18,7 +18,6 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::ipc::{Channel, InvokeResponseBody, Request};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -522,27 +521,9 @@ pub async fn remote_duplicate(net: Net_<'_>, server_id: String, canvas_id: Strin
 }
 
 #[tauri::command]
-pub async fn remote_delete(
-    app: AppHandle,
-    window: WebviewWindow,
-    net: Net_<'_>,
-    server_id: String,
-    canvas_id: String,
-    name: String,
-) -> Result<bool> {
-    let (_, _, server_name) = net.endpoint(&server_id)?;
-    let confirmed = app
-        .dialog()
-        .message(format!("It will be deleted from {server_name} for everyone. This can’t be undone."))
-        .title(format!("Delete “{name}”?"))
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Delete".into(), "Cancel".into()))
-        .parent(&window)
-        .blocking_show();
-    if confirmed {
-        call(&net, &server_id, reqwest::Method::DELETE, &format!("/api/canvases/{canvas_id}"), None).await?;
-    }
-    Ok(confirmed)
+pub async fn remote_delete(net: Net_<'_>, server_id: String, canvas_id: String) -> Result<bool> {
+    call(&net, &server_id, reqwest::Method::DELETE, &format!("/api/canvases/{canvas_id}"), None).await?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -570,27 +551,12 @@ pub async fn remote_export(
 /// Uploads a local canvas to a server and, once it's there, removes the local copy.
 #[tauri::command]
 pub async fn move_to_server(
-    app: AppHandle,
-    window: WebviewWindow,
     net: Net_<'_>,
     store: crate::Store<'_>,
     canvas_id: String,
     server_id: String,
 ) -> Result<Option<Value>> {
     let (meta, _) = crate::lock(&store).meta(&canvas_id)?;
-    let (_, _, server_name) = net.endpoint(&server_id)?;
-    let confirmed = app
-        .dialog()
-        .message(format!(
-            "Everyone with access to {server_name} will be able to see and edit it. The copy on this Mac is removed."
-        ))
-        .title(format!("Move “{}” to {server_name}?", meta.name))
-        .buttons(MessageDialogButtons::OkCancelCustom("Move".into(), "Cancel".into()))
-        .parent(&window)
-        .blocking_show();
-    if !confirmed {
-        return Ok(None);
-    }
     let scene = String::from_utf8(crate::lock(&store).load_scene(&canvas_id)?).map_err(|e| e.to_string())?;
     let body = json!({ "name": meta.name, "scene": scene });
     let remote = json_of(call(&net, &server_id, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await?;

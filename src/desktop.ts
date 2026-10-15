@@ -1,6 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Menu } from "@tauri-apps/api/menu";
 import { clientColor } from "./colors";
 
 export type CanvasMeta = {
@@ -128,41 +127,8 @@ export type Session = {
   close: () => Promise<void>;
 };
 
-/** One entry of a native context menu. */
-export type MenuEntry =
-  | { id: string; text: string; enabled?: boolean }
-  | { text: string; items: MenuEntry[]; enabled?: boolean }
-  | "separator";
-
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-/** Shows a native context menu and resolves with the picked item's id. */
-async function contextMenu(entries: MenuEntry[]): Promise<string | null> {
-  let choice: string | null = null;
-  let picked: () => void = () => {};
-  const pickedPromise = new Promise<void>((resolve) => (picked = resolve));
-  type Built = Parameters<typeof Menu.new>[0] extends { items?: (infer I)[] } | undefined ? I : never;
-  const build = (entry: MenuEntry): Built => {
-    if (entry === "separator") return { item: "Separator" } as Built;
-    if ("items" in entry) return { text: entry.text, enabled: entry.enabled ?? true, items: entry.items.map(build) } as Built;
-    return {
-      id: entry.id,
-      text: entry.text,
-      enabled: entry.enabled ?? true,
-      action: () => {
-        choice = entry.id;
-        picked();
-      },
-    } as Built;
-  };
-  const menu = await Menu.new({ items: entries.map(build) });
-  await menu.popup();
-  // popup() returns once the menu closes; the click event may land a tick later.
-  await Promise.race([pickedPromise, new Promise((r) => setTimeout(r, 150))]);
-  menu.close();
-  return choice;
-}
 
 export const desktop = {
   list: () => invoke<CanvasMeta[]>("list_canvases"),
@@ -186,14 +152,12 @@ export const desktop = {
   exportCanvas: (id: string) => invoke<boolean>("export_canvas", { id }),
   importDialog: () => invoke<ImportResult>("import_dialog"),
   importData: (files: { name: string; text: string }[]) => invoke<ImportResult>("import_data", { files }),
-  contextMenu,
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (patch: Partial<Settings>) => invoke<Settings>("set_settings", { patch }),
 
   saveDownload: (name: string, bytes: Uint8Array) =>
     invoke<boolean>("save_download", bytes, { headers: { "x-file-name": encodeURIComponent(name) } }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
-  showError: (title: string, message: string) => invoke<void>("show_error", { title, message }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),
   userFullName: () => invoke<string>("user_full_name"),
 
@@ -221,8 +185,7 @@ export const desktop = {
       invoke<RemoteCanvas>("remote_rename", { serverId, canvasId, name }),
     duplicate: (serverId: string, canvasId: string) =>
       invoke<RemoteCanvas>("remote_duplicate", { serverId, canvasId }),
-    remove: (serverId: string, canvasId: string, name: string) =>
-      invoke<boolean>("remote_delete", { serverId, canvasId, name }),
+    remove: (serverId: string, canvasId: string) => invoke<boolean>("remote_delete", { serverId, canvasId }),
     exportCanvas: (serverId: string, canvasId: string, name: string) =>
       invoke<boolean>("remote_export", { serverId, canvasId, name }),
     /** Uploads a local canvas; resolves with the remote copy, or null if cancelled. */

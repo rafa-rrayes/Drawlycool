@@ -906,3 +906,105 @@ body,
   font-size: 13px;
   font-weight: 600;
 }
+
+/* ------------------------------------------------------------------ in-app menus & dialogs */
+
+.ui-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+.ui-menu {
+  position: fixed;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.16);
+  font-family: var(--ui);
+  font-size: 13px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ui-menu--sub {
+  position: absolute;
+  top: -7px;
+  left: calc(100% - 2px);
+}
+
+.ui-menu--flip {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.ui-menu__sub {
+  position: relative;
+}
+
+.ui-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.ui-menu__item:hover:not(:disabled),
+.ui-menu__item:focus-visible {
+  background: var(--card-hover);
+  outline: none;
+}
+
+.ui-menu__item:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.ui-menu__item--danger {
+  color: var(--danger);
+}
+
+.ui-menu__chevron {
+  margin-left: 14px;
+  color: var(--muted);
+}
+
+.ui-menu__separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+.ui-dialog {
+  width: min(420px, 100%);
+  z-index: 1;
+}
+
+.ui-dialog__title {
+  font-size: 26px;
+  margin-bottom: 10px;
+}
+
+.ui-dialog__message {
+  margin-bottom: 14px;
+  user-select: text;
+}
+
+.text-button--solid-danger {
+  background: var(--danger);
+  color: var(--bg);
+}
+
+.text-button--solid-danger:hover {
+  background: color-mix(in srgb, var(--danger) 88%, var(--ink));
+}

@@ -19,7 +19,7 @@ use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, SubmenuBui
 use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_dialog::DialogExt;
 
 const MAIN: &str = "main";
 
@@ -154,20 +154,9 @@ fn duplicate_canvas(store: Store, id: String) -> Result<CanvasMeta> {
 }
 
 #[tauri::command]
-async fn delete_canvas(app: AppHandle, window: WebviewWindow, store: Store<'_>, id: String) -> Result<bool> {
-    let (meta, _) = lock(&store).meta(&id)?;
-    let confirmed = app
-        .dialog()
-        .message("This canvas will be permanently deleted. This can’t be undone.")
-        .title(format!("Delete “{}”?", meta.name))
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Delete".into(), "Cancel".into()))
-        .parent(&window)
-        .blocking_show();
-    if confirmed {
-        lock(&store).remove(&id)?;
-    }
-    Ok(confirmed)
+fn delete_canvas(store: Store, id: String) -> Result<bool> {
+    lock(&store).remove(&id)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -211,7 +200,7 @@ struct ImportResult {
     errors: Vec<String>,
 }
 
-fn import_many(app: &AppHandle, window: &WebviewWindow, store: &Store, files: Vec<ImportFile>) -> ImportResult {
+fn import_many(store: &Store, files: Vec<ImportFile>) -> ImportResult {
     let mut result = ImportResult { imported: vec![], errors: vec![] };
     for file in files {
         let name = strip_extension(&file.name);
@@ -223,14 +212,6 @@ fn import_many(app: &AppHandle, window: &WebviewWindow, store: &Store, files: Ve
             Ok(meta) => result.imported.push(meta),
             Err(e) => result.errors.push(e),
         }
-    }
-    if !result.errors.is_empty() {
-        app.dialog()
-            .message(result.errors.join("\n"))
-            .title("Some files couldn’t be imported")
-            .kind(MessageDialogKind::Error)
-            .parent(window)
-            .blocking_show();
     }
     result
 }
@@ -250,12 +231,12 @@ async fn import_dialog(app: AppHandle, window: WebviewWindow, store: Store<'_>) 
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         files.push(ImportFile { name: path.to_string_lossy().into_owned(), text });
     }
-    Ok(import_many(&app, &window, &store, files))
+    Ok(import_many(&store, files))
 }
 
 #[tauri::command]
-async fn import_data(app: AppHandle, window: WebviewWindow, store: Store<'_>, files: Vec<ImportFile>) -> Result<ImportResult> {
-    Ok(import_many(&app, &window, &store, files))
+fn import_data(store: Store<'_>, files: Vec<ImportFile>) -> Result<ImportResult> {
+    Ok(import_many(&store, files))
 }
 
 /// Saves a file the page wanted to "download" (e.g. Export image → PNG/SVG).
@@ -269,11 +250,6 @@ async fn save_download(app: AppHandle, window: WebviewWindow, request: Request<'
     };
     std::fs::write(target, raw_body(&request)?).map_err(|e| e.to_string())?;
     Ok(true)
-}
-
-#[tauri::command]
-async fn show_error(app: AppHandle, window: WebviewWindow, title: String, message: String) {
-    app.dialog().message(message).title(title).kind(MessageDialogKind::Error).parent(&window).blocking_show();
 }
 
 #[tauri::command]
@@ -528,7 +504,6 @@ pub fn run() {
             import_data,
             save_download,
             open_url,
-            show_error,
             get_settings,
             set_settings,
             flushed,

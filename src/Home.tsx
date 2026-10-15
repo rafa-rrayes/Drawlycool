@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
-import { desktop, type CanvasMeta, type MenuEntry, type Peer, type Profile, type RemoteCanvas, type ServerInfo } from "./desktop";
+import { desktop, type CanvasMeta, type Peer, type Profile, type RemoteCanvas, type ServerInfo } from "./desktop";
 import { RoughBox, seedFrom } from "./RoughBox";
 import { AiConnectPanel, ConnectPanel, HostPanel, ProfilePanel, type Panel } from "./Panels";
+import { ui, anchorOf, type Anchor, type MenuEntry } from "./ui";
 import { clientColor, initials } from "./colors";
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -89,9 +90,9 @@ export function Home({
     refresh();
   };
 
-  const showMenu = async (canvas: CanvasMeta) => {
+  const showMenu = async (canvas: CanvasMeta, anchor: Anchor) => {
     const moveTargets: MenuEntry[] = servers.map((s) => ({ id: `move:${s.id}`, text: s.name }));
-    const action = await desktop.contextMenu([
+    const action = await ui.menu([
       { id: "open", text: "Open" },
       "separator",
       { id: "rename", text: "Rename…" },
@@ -101,10 +102,16 @@ export function Home({
       { id: "reveal", text: "Show in Finder" },
       "separator",
       { id: "delete", text: "Delete…" },
-    ]);
+    ], anchor);
     if (action?.startsWith("move:")) {
       const server = servers.find((s) => `move:${s.id}` === action);
       if (!server) return;
+      const ok = await ui.confirm({
+        title: `Move “${canvas.name}” to ${server.name}?`,
+        message: `Everyone with access to ${server.name} will be able to see and edit it. The copy on this Mac is removed.`,
+        confirmLabel: "Move",
+      });
+      if (!ok) return;
       try {
         const moved = await desktop.remote.moveToServer(canvas.id, server.id);
         if (moved) {
@@ -128,9 +135,21 @@ export function Home({
         return desktop.exportCanvas(canvas.id);
       case "reveal":
         return desktop.reveal(canvas.id);
-      case "delete":
-        if (await desktop.remove(canvas.id)) refresh();
-        return;
+      case "delete": {
+        const ok = await ui.confirm({
+          title: `Delete “${canvas.name}”?`,
+          message: "This canvas will be permanently deleted. This can’t be undone.",
+          confirmLabel: "Delete",
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          await desktop.remove(canvas.id);
+        } catch (err) {
+          alertError(`Couldn’t delete “${canvas.name}”`, err);
+        }
+        return refresh();
+      }
     }
   };
 
@@ -141,7 +160,8 @@ export function Home({
       [...event.dataTransfer.files].map(async (f) => ({ name: f.name, text: await f.text() })),
     );
     if (!files.length) return;
-    const { imported } = await desktop.importData(files);
+    const { imported, errors } = await desktop.importData(files);
+    if (errors.length) ui.alert("Some files couldn’t be imported", errors.join("\n"));
     if (imported.length) refresh();
   };
 
@@ -216,7 +236,7 @@ export function Home({
                   key={canvas.id}
                   canvas={canvas}
                   onOpen={() => onOpen(canvas.id)}
-                  onMenu={() => showMenu(canvas)}
+                  onMenu={(anchor) => showMenu(canvas, anchor)}
                 />
               ),
             )}
@@ -280,7 +300,7 @@ export function Home({
 }
 
 export function alertError(title: string, err: unknown) {
-  desktop.showError(title, String((err as Error)?.message ?? err));
+  ui.alert(title, String((err as Error)?.message ?? err));
 }
 
 // ------------------------------------------------------------------ cards
@@ -305,7 +325,7 @@ function CanvasCard({
   canvas: CanvasMeta;
   peers?: Peer[];
   onOpen: () => void;
-  onMenu: () => void;
+  onMenu: (anchor: Anchor) => void;
 }) {
   return (
     <button
@@ -314,7 +334,7 @@ function CanvasCard({
       onClick={onOpen}
       onContextMenu={(e) => {
         e.preventDefault();
-        onMenu();
+        onMenu(anchorOf(e));
       }}
     >
       <RoughBox seed={seedFrom(canvas.id)} className="card">
@@ -328,7 +348,7 @@ function CanvasCard({
           aria-label="More actions"
           onClick={(e) => {
             e.stopPropagation();
-            onMenu();
+            onMenu(anchorOf(e));
           }}
         >
           •••
@@ -421,8 +441,8 @@ function ServerSection({
     load();
   };
 
-  const showCanvasMenu = async (canvas: RemoteCanvas) => {
-    const action = await desktop.contextMenu([
+  const showCanvasMenu = async (canvas: RemoteCanvas, anchor: Anchor) => {
+    const action = await ui.menu([
       { id: "open", text: "Open" },
       "separator",
       { id: "rename", text: "Rename…" },
@@ -432,7 +452,7 @@ function ServerSection({
       { id: "export", text: "Export…" },
       "separator",
       { id: "delete", text: "Delete…" },
-    ]);
+    ], anchor);
     try {
       switch (action) {
         case "open":
@@ -449,16 +469,23 @@ function ServerSection({
         case "export":
           return await desktop.remote.exportCanvas(server.id, canvas.id, canvas.name);
         case "delete":
-          if (await desktop.remote.remove(server.id, canvas.id, canvas.name)) load();
-          return;
+          const ok = await ui.confirm({
+            title: `Delete “${canvas.name}”?`,
+            message: `It will be deleted from ${server.name} for everyone. This can’t be undone.`,
+            confirmLabel: "Delete",
+            danger: true,
+          });
+          if (!ok) return;
+          await desktop.remote.remove(server.id, canvas.id);
+          return load();
       }
     } catch (err) {
       alertError("Something went wrong", err);
     }
   };
 
-  const showServerMenu = async () => {
-    const action = await desktop.contextMenu(
+  const showServerMenu = async (anchor: Anchor) => {
+    const action = await ui.menu(
       server.isHost
         ? [
             { id: "invite", text: "Copy Invite Link" },
@@ -471,6 +498,7 @@ function ServerSection({
             "separator",
             { id: "remove", text: "Remove Server" },
           ],
+      anchor,
     );
     if (action === "invite") copyInvite();
     if (action === "ai") onConnectAi();
@@ -490,7 +518,7 @@ function ServerSection({
         <button className="link-button" onClick={() => copyInvite()}>
           {copied ? "Copied!" : "Copy invite link"}
         </button>
-        <button className="link-button link-button--quiet" aria-label="Server actions" onClick={showServerMenu}>
+        <button className="link-button link-button--quiet" aria-label="Server actions" onClick={(e) => showServerMenu(anchorOf(e))}>
           •••
         </button>
       </div>
@@ -530,7 +558,7 @@ function ServerSection({
                 canvas={canvas}
                 peers={canvas.peers}
                 onOpen={() => onOpen(canvas.id)}
-                onMenu={() => showCanvasMenu(canvas)}
+                onMenu={(anchor) => showCanvasMenu(canvas, anchor)}
               />
             ),
           )}
