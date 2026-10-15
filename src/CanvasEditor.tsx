@@ -219,6 +219,8 @@ export function CanvasEditor({ id, themePreference, effectiveTheme, onThemeChang
         theme={effectiveTheme}
         name={meta?.name}
         aiEnabled={false}
+        // Desktop app, not a hosted site: no URL whitelist to request.
+        validateEmbeddable
         UIOptions={UI_OPTIONS}
         renderTopRightUI={renderTopRightUI}
         handleKeyboardGlobally
