@@ -56,6 +56,31 @@ Invite links look like `drawlycool://tidy-otter.trycloudflare.com/<token>`: the 
 
 **Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the Host panel issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless it goes through the Cloudflare tunnel or the server sits behind a TLS proxy, so on the *Same network* option stay on a trusted network or Tailscale/VPN. The tunnel encrypts traffic between guests and Cloudflare, but Cloudflare can see it. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
 
+### Draw with an AI assistant
+
+Every server, including a Mac that hosts, has an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp`. Claude and other AI assistants can use it to join a shared canvas as a participant. People see the assistant's name and cursor, and its drawing appears piece by piece. You can follow its view, and it can point things out with the laser. It also sees your cursor and selection, so "make this blue" works.
+
+To set it up, click the sparkles icon next to a shared canvas's name, or choose *Connect AI Assistant…* in a server's `•••` menu, and copy the setup for your app:
+
+- **Claude Code:** run the `claude mcp add …` command it shows, then ask Claude to draw something.
+- **Claude Desktop or claude.ai:** Settings → Connectors → *Add custom connector*, then paste the URL. Cloud apps connect from the internet, so this needs a public `https://` address, such as *Anyone, over the internet* hosting or a deployed server. Without one, the panel gives a local bridge config for Claude Desktop that uses `npx mcp-remote`.
+- **Other MCP apps** (Cursor, Windsurf, Codex…): use the JSON config. The endpoint is `<server>/mcp`, with `Authorization: Bearer <token>` or `?token=<token>`.
+- **Optional query parameters:** `canvas=<id>` makes the assistant start in that canvas, and `name=<name>` sets the name shown next to its cursor.
+
+The tools are built so a model can make tidy diagrams without doing coordinate math:
+
+| Tool | What it does |
+| --- | --- |
+| `list_canvases`, `open_canvas` | Find, create and join canvases |
+| `describe_canvas` | A compact inventory: ids, positions, labels, connections, who's here and what they've selected, and free space |
+| `view_canvas` | A PNG of the canvas with a coordinate grid, so the model can check its work |
+| `draw` | Shapes, text, arrows, lines, frames, notes and zones. Shapes size themselves to their labels. Elements can be placed relative to others (`below`, `right_of`…). Arrows bind to shapes, with straight, elbow or curved routes. Named palette colours. Reusing an id updates that element |
+| `draw_diagram` | Automatic layouts: flowchart / layered graph, tree, mind map, radial, grid and sequence diagram, with clusters, titles and consistent styling |
+| `arrange` | Move, align, distribute, row/column/grid, z-order, group, lock, frame |
+| `delete_elements`, `point_at`, `update_canvas` | Clean up, point with the laser, rename or recolour the canvas |
+
+Every change comes back with a layout check that reports overlaps, labels that don't fit, arrows crossing shapes and low-contrast text, so the model can fix them. The assistant leaves the canvas after 15 minutes without a tool call. Anyone holding the token can do everything the assistant can, so treat MCP settings like an invite link.
+
 ### Deploy a server for your team
 
 On any Linux server with a domain pointing at it (ports 80 and 443 open), run:
@@ -111,7 +136,8 @@ Layout:
   - `storage.rs`: canvas files. Writes are atomic and serialized under a mutex. The app uses it for local canvases too.
   - `scene.rs`: element merging by version/nonce, the same rule Excalidraw uses.
   - `lib.rs`: HTTP API, WebSocket rooms, presence, follow, and debounced saves.
-  - `tests/sync.rs`: run with `cargo test` in `server/`.
+  - `mcp/`: the MCP endpoint. `mod.rs` handles the transport and sessions, `agent.rs` the assistant's presence (cursor, animated drawing, laser), `tools.rs` the tool schemas, and `draw.rs`, `diagram.rs` and `layout.rs` build and lay out elements. `build.rs` follows Excalidraw's own rules for labels, bindings and elbow arrows, `describe.rs` writes the scene text and the layout check, and `render.rs` makes the PNG previews. Text is measured with the editor's fonts (`assets/fonts`), so labels fit.
+  - `tests/sync.rs`, `tests/mcp.rs`: run with `cargo test` in `server/`.
 - `src-tauri/src/lib.rs`: window, native menu, commands, and the quit-time save flush.
 - `src-tauri/src/network.rs`: saved servers, invite links, and live sessions. All networking runs in Rust; the webview only sees a channel.
 - `src-tauri/src/host.rs`: runs the server inside the app when hosting.
