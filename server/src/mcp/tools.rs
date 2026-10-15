@@ -503,7 +503,7 @@ fn report(draft: &Draft, out: &Outcome, verb: &str) -> String {
         s.push_str(&format!("Note: {n}\n"));
     }
     let touched: HashSet<String> = draft.changed().iter().cloned().collect();
-    let issues = describe::lint(&draft.alive(), &touched);
+    let issues = describe::lint_on(&draft.alive(), &touched, draft.background.as_deref());
     if issues.is_empty() {
         s.push_str("Layout check: no overlaps or crossings found.");
     } else {
