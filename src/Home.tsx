@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { desktop, type CanvasMeta, type MenuEntry, type Peer, type Profile, type RemoteCanvas, type ServerInfo } from "./desktop";
 import { RoughBox, seedFrom } from "./RoughBox";
-import { ConnectPanel, HostPanel, ProfilePanel, type Panel } from "./Panels";
+import { AiConnectPanel, ConnectPanel, HostPanel, ProfilePanel, type Panel } from "./Panels";
 import { clientColor, initials } from "./colors";
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -236,6 +236,9 @@ export function Home({
               onOpen={(canvasId) => onOpenRemote(server, canvasId)}
               onRemoved={refreshServers}
               onHostSettings={() => setPanel({ kind: "host" })}
+              onConnectAi={(canvas) =>
+                setPanel({ kind: "ai", serverId: server.id, canvasId: canvas?.id, canvasName: canvas?.name })
+              }
             />
           ))}
         </div>
@@ -253,7 +256,22 @@ export function Home({
           }}
         />
       )}
-      {panel?.kind === "host" && <HostPanel onClose={() => setPanel(null)} onChanged={refreshServers} />}
+      {panel?.kind === "host" && (
+        <HostPanel
+          onClose={() => setPanel(null)}
+          onChanged={refreshServers}
+          onConnectAi={() => setPanel({ kind: "ai", serverId: "this-mac" })}
+        />
+      )}
+      {panel?.kind === "ai" && (
+        <AiConnectPanel
+          serverId={panel.serverId}
+          canvasId={panel.canvasId}
+          canvasName={panel.canvasName}
+          onClose={() => setPanel(null)}
+          onHostSettings={() => setPanel({ kind: "host" })}
+        />
+      )}
       {panel?.kind === "profile" && (
         <ProfilePanel profile={profile} onChange={onProfileChange} onClose={() => setPanel(null)} />
       )}
@@ -342,12 +360,15 @@ function ServerSection({
   onOpen,
   onRemoved,
   onHostSettings,
+  onConnectAi,
 }: {
   server: ServerInfo;
   tick: number;
   onOpen: (canvasId: string) => void;
   onRemoved: () => void;
   onHostSettings: () => void;
+  /** For the whole server, or starting in one canvas. */
+  onConnectAi: (canvas?: RemoteCanvas) => void;
 }) {
   const [canvases, setCanvases] = useState<RemoteCanvas[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -407,6 +428,7 @@ function ServerSection({
       { id: "rename", text: "Rename…" },
       { id: "duplicate", text: "Duplicate" },
       { id: "invite", text: "Copy Invite Link" },
+      { id: "ai", text: "Connect AI Assistant…" },
       { id: "export", text: "Export…" },
       "separator",
       { id: "delete", text: "Delete…" },
@@ -422,6 +444,8 @@ function ServerSection({
           return load();
         case "invite":
           return copyInvite(canvas.id);
+        case "ai":
+          return onConnectAi(canvas);
         case "export":
           return await desktop.remote.exportCanvas(server.id, canvas.id, canvas.name);
         case "delete":
@@ -438,15 +462,18 @@ function ServerSection({
       server.isHost
         ? [
             { id: "invite", text: "Copy Invite Link" },
+            { id: "ai", text: "Connect AI Assistant…" },
             { id: "settings", text: "Hosting Settings…" },
           ]
         : [
             { id: "invite", text: "Copy Invite Link" },
+            { id: "ai", text: "Connect AI Assistant…" },
             "separator",
             { id: "remove", text: "Remove Server" },
           ],
     );
     if (action === "invite") copyInvite();
+    if (action === "ai") onConnectAi();
     if (action === "settings") onHostSettings();
     if (action === "remove") {
       await desktop.servers.remove(server.id);

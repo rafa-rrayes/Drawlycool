@@ -795,6 +795,25 @@ body,
   -webkit-user-select: all;
 }
 
+/* Multi-line config: keep its indentation, scroll if it's long. */
+.invite--block {
+  align-items: flex-start;
+}
+
+.invite__url--code {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.form__help code {
+  font-size: 12px;
+}
+
 .invite__url--pending {
   color: var(--muted);
   font-family: inherit;
@@ -819,6 +838,12 @@ body,
   font: inherit;
   font-weight: 500;
   cursor: pointer;
+}
+
+/* Options sized to their labels, for longer ones. */
+.segmented--fit .segmented__option {
+  flex: auto;
+  white-space: nowrap;
 }
 
 .segmented__option:hover:not(:disabled) {

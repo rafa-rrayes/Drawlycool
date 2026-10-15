@@ -43,6 +43,7 @@ Shared canvases live on a **server**. Any Mac running the app can act as one, or
 | Create a shared canvas | **+ New canvas** under the server's section on the Welcome screen |
 | Share an existing canvas | Right-click a local card → *Move to* → server |
 | Your name on other people's screens | Click your avatar (top-right of the Welcome screen) |
+| Let an AI assistant draw with you | Sparkles icon by a shared canvas's name, or *Connect AI Assistant…* in a server's `•••` menu. It shows the setup for Claude Code, Claude Desktop & claude.ai, and other MCP apps |
 
 In a shared canvas you see everyone's cursors, selections and names. Click someone's avatar to follow their viewport. Edits merge per element, so if two people move the *same* shape at once, one change wins. If the connection drops, the canvas turns read-only with a *Reconnecting…* banner until it comes back. There is no offline editing of shared canvases.
 
@@ -121,6 +122,6 @@ Layout:
 - `src/Home.tsx`: the Welcome screen. Card outlines are drawn with rough.js.
 - `src/CanvasEditor.tsx`: the Excalidraw editor with a trimmed menu, auto-save and library blocking.
 - `src/RemoteCanvasEditor.tsx`: the same editor connected to a server, with reconcile, cursors, follow and reconnect.
-- `src/Panels.tsx`: the Connect, Host and profile dialogs.
+- `src/Panels.tsx`: the Connect, Host, AI assistant and profile dialogs.
 
 The app is ad-hoc signed, not notarized (see *Install*). To publish a release, run `npm run dist` and attach `src-tauri/target/release/bundle/dmg/*.dmg` as `Drawlycool.dmg`. The install script always downloads `releases/latest/download/Drawlycool.dmg`.

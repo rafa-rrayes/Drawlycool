@@ -28,7 +28,16 @@ import {
   type ThemePreference,
   type Viewport,
 } from "./desktop";
-import { CanvasChip, EditorMainMenu, UI_OPTIONS, exposeApi, linkIcon, useEditorHousekeeping } from "./editorChrome";
+import {
+  CanvasChip,
+  EditorMainMenu,
+  UI_OPTIONS,
+  exposeApi,
+  linkIcon,
+  sparklesIcon,
+  useEditorHousekeeping,
+} from "./editorChrome";
+import { AiConnectPanel } from "./Panels";
 
 const BROADCAST_DELAY = 50;
 const POINTER_DELAY = 40;
@@ -46,6 +55,8 @@ type Props = {
   effectiveTheme: "light" | "dark";
   onThemeChange: (theme: ThemePreference) => void;
   onGoHome: () => void;
+  /** Opens the Host panel (from "Connect an AI assistant"). */
+  onHostSettings: () => void;
   /** Lets the app send pending changes before navigating or quitting. */
   registerFlush: (flush: (() => Promise<void>) | null) => void;
 };
@@ -115,6 +126,7 @@ export function RemoteCanvasEditor({
   effectiveTheme,
   onThemeChange,
   onGoHome,
+  onHostSettings,
   registerFlush,
 }: Props) {
   const [meta, setMeta] = useState<CanvasMeta | null>(null);
@@ -124,6 +136,7 @@ export function RemoteCanvasEditor({
   const [fatal, setFatal] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [aiPanel, setAiPanel] = useState(false);
 
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const sessionRef = useRef<Session | null>(null);
@@ -500,6 +513,14 @@ export function RemoteCanvasEditor({
         >
           {copied ? <span className="canvas-chip__copied">Copied</span> : linkIcon}
         </button>
+        <button
+          className="canvas-chip__icon"
+          title="Invite an AI assistant"
+          aria-label="Invite an AI assistant"
+          onClick={() => setAiPanel(true)}
+        >
+          {sparklesIcon}
+        </button>
       </CanvasChip>
     ),
     [meta, renaming, commitRename, onGoHome, copied, copyInvite],
@@ -513,9 +534,14 @@ export function RemoteCanvasEditor({
         themePreference={themePreference}
         onThemeChange={onThemeChange}
         extraItems={
-          <MainMenu.Item icon={linkIcon} onSelect={copyInvite}>
-            Copy invite link
-          </MainMenu.Item>
+          <>
+            <MainMenu.Item icon={linkIcon} onSelect={copyInvite}>
+              Copy invite link
+            </MainMenu.Item>
+            <MainMenu.Item icon={sparklesIcon} onSelect={() => setAiPanel(true)}>
+              Invite an AI assistant…
+            </MainMenu.Item>
+          </>
         }
       />
     ),
@@ -567,6 +593,18 @@ export function RemoteCanvasEditor({
       >
         {mainMenu}
       </Excalidraw>
+      {aiPanel && (
+        // Keys typed in the dialog aren't editor shortcuts (Escape still closes it).
+        <div onKeyDown={(e) => e.key !== "Escape" && e.stopPropagation()}>
+          <AiConnectPanel
+            serverId={serverId}
+            canvasId={canvasId}
+            canvasName={meta?.name}
+            onClose={() => setAiPanel(false)}
+            onHostSettings={onHostSettings}
+          />
+        </div>
+      )}
     </div>
   );
 }

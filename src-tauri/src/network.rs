@@ -301,6 +301,196 @@ pub fn invite_link(
     Ok(drawlycool_server::invite_link(&url, &token, canvas_id.as_deref()))
 }
 
+// ------------------------------------------------------------------ AI assistants
+
+/// Ready-to-paste settings for one address of a server's `/mcp` endpoint.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSnippets {
+    /// `<base>/mcp[?canvas=…]`, used with an `Authorization` header.
+    url: String,
+    /// `claude mcp add …` for Terminal.
+    claude_code: String,
+    /// `{"mcpServers": …}` for apps that speak HTTP MCP (Cursor, VS Code…).
+    json_config: String,
+    /// The URL with the token in it, for apps where you can only paste a URL
+    /// (claude.ai / Claude Desktop custom connectors).
+    connector_url: String,
+    /// `{"mcpServers": …}` running `npx mcp-remote`, for apps that only start
+    /// local (stdio) servers.
+    bridge_config: String,
+}
+
+/// How an AI assistant joins a server (or one canvas on it) over MCP.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConnectInfo {
+    server_name: String,
+    canvas_id: Option<String>,
+    canvas_name: Option<String>,
+    token: String,
+    /// Name the assistant's settings use for this server, e.g. `drawlycool-roadmap`.
+    mcp_name: String,
+    /// For assistants on this Mac (hosted servers only).
+    local_url: Option<String>,
+    /// For other machines and cloud apps.
+    remote_url: Option<String>,
+    local: Option<AiSnippets>,
+    remote: Option<AiSnippets>,
+    /// Why cloud apps such as claude.ai can't connect (yet).
+    cloud_note: Option<String>,
+    /// The internet link may show up soon, so it's worth asking again.
+    waiting: bool,
+}
+
+/// Addresses and ready-made settings for connecting an AI assistant to a
+/// server's MCP endpoint, starting in `canvas_id` if given.
+#[tauri::command]
+pub fn ai_connect_info(
+    net: Net_,
+    host: State<host::HostState>,
+    server_id: String,
+    canvas_id: Option<String>,
+    canvas_name: Option<String>,
+) -> Result<AiConnectInfo> {
+    let (base, token, server_name) = net.endpoint(&server_id)?;
+    if canvas_id.as_deref().is_some_and(|id| !storage::is_valid_id(id)) {
+        return Err("Invalid canvas id".into());
+    }
+    let canvas_name = canvas_name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+    let (local_url, remote_url, cloud_note, waiting) = if server_id == HOST_ID {
+        let reach = host::reach(&net, &host);
+        (Some(base), reach.url, reach.cloud_note, reach.waiting)
+    } else {
+        let note = base.starts_with("http://").then(|| {
+            format!("Cloud apps like claude.ai need a public https:// address, and {server_name} uses plain http.")
+        });
+        (None, Some(base), note, false)
+    };
+
+    let slug = slug(canvas_name.as_deref().unwrap_or(&server_name));
+    let mcp_name = if slug.is_empty() { "drawlycool".to_owned() } else { format!("drawlycool-{slug}") };
+    let snippets =
+        |base: &String| ai_snippets(&mcp_name, &mcp_url(base, None, canvas_id.as_deref()), base, &token, canvas_id.as_deref());
+    Ok(AiConnectInfo {
+        local: local_url.as_ref().map(snippets),
+        remote: remote_url.as_ref().map(snippets),
+        local_url: local_url.as_ref().map(|b| mcp_url(b, None, canvas_id.as_deref())),
+        remote_url: remote_url.as_ref().map(|b| mcp_url(b, None, canvas_id.as_deref())),
+        server_name,
+        canvas_id,
+        canvas_name,
+        token,
+        mcp_name,
+        cloud_note,
+        waiting,
+    })
+}
+
+/// `<base>/mcp`, with `token` and `canvas` in the query when given.
+fn mcp_url(base: &str, token: Option<&str>, canvas: Option<&str>) -> String {
+    let query: Vec<String> = [("token", token), ("canvas", canvas)]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| format!("{key}={}", encode(v))))
+        .collect();
+    let base = base.trim_end_matches('/');
+    if query.is_empty() {
+        format!("{base}/mcp")
+    } else {
+        format!("{base}/mcp?{}", query.join("&"))
+    }
+}
+
+fn ai_snippets(name: &str, url: &str, base: &str, token: &str, canvas: Option<&str>) -> AiSnippets {
+    let auth = format!("Bearer {token}");
+    let claude_code = format!(
+        "claude mcp add --transport http --scope user {} {} --header {}",
+        sh_quote(name),
+        sh_quote(url),
+        sh_quote(&format!("Authorization: {auth}"))
+    );
+    let json_config = json!({
+        "mcpServers": { name: { "type": "http", "url": url, "headers": { "Authorization": auth } } }
+    });
+    // mcp-remote refuses plain http unless told otherwise.
+    let mut args = vec!["-y".to_owned(), "mcp-remote".into(), url.into(), "--header".into(), format!("Authorization: {auth}")];
+    if url.starts_with("http://") {
+        args.push("--allow-http".into());
+    }
+    let bridge_config = json!({ "mcpServers": { name: { "command": "npx", "args": args } } });
+    let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_default();
+    AiSnippets {
+        url: url.to_owned(),
+        claude_code,
+        json_config: pretty(&json_config),
+        connector_url: mcp_url(base, Some(token), canvas),
+        bridge_config: pretty(&bridge_config),
+    }
+}
+
+/// Lowercase ASCII words joined by dashes, at most 32 characters.
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(32);
+    out.trim_end_matches('-').to_owned()
+}
+
+/// Quotes a word for zsh/bash, leaving plain ones alone.
+fn sh_quote(s: &str) -> String {
+    let plain = |b: u8| b.is_ascii_alphanumeric() || b"-_./:@%+=,".contains(&b);
+    if !s.is_empty() && s.bytes().all(plain) {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_snippets_quote_and_encode() {
+        let base = "http://127.0.0.1:4180";
+        let s = ai_snippets("drawlycool-plan", &mcp_url(base, None, Some("a b")), base, "t&k", Some("a b"));
+        assert_eq!(s.url, "http://127.0.0.1:4180/mcp?canvas=a%20b");
+        assert_eq!(s.connector_url, "http://127.0.0.1:4180/mcp?token=t%26k&canvas=a%20b");
+        assert_eq!(
+            s.claude_code,
+            "claude mcp add --transport http --scope user drawlycool-plan 'http://127.0.0.1:4180/mcp?canvas=a%20b' --header 'Authorization: Bearer t&k'"
+        );
+        let bridge: Value = serde_json::from_str(&s.bridge_config).unwrap();
+        assert_eq!(bridge["mcpServers"]["drawlycool-plan"]["args"][5], "--allow-http");
+        let config: Value = serde_json::from_str(&s.json_config).unwrap();
+        assert_eq!(config["mcpServers"]["drawlycool-plan"]["headers"]["Authorization"], "Bearer t&k");
+        assert_eq!(mcp_url("https://x.trycloudflare.com", None, None), "https://x.trycloudflare.com/mcp");
+    }
+
+    #[test]
+    fn slugs() {
+        assert_eq!(slug("Rafa’s Mac"), "rafa-s-mac");
+        assert_eq!(slug("  Q3 Roadmap!! "), "q3-roadmap");
+        assert_eq!(slug("日本"), "");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+    }
+}
+
+fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn take_pending_links(net: Net_) -> Vec<String> {
     std::mem::take(&mut *lock(&net.pending_links))

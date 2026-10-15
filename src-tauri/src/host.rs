@@ -140,6 +140,45 @@ fn sync_tunnel(net: &Net, host: &HostState, retry: bool) {
     }
 }
 
+/// How other machines (and cloud AI assistants) reach this Mac's server.
+pub struct Reach {
+    /// The internet link or the LAN address; `None` while the internet link
+    /// is on its way or broken.
+    pub url: Option<String>,
+    /// Why cloud apps such as claude.ai can't connect (yet).
+    pub cloud_note: Option<String>,
+    /// The internet link may show up soon, so it's worth asking again.
+    pub waiting: bool,
+}
+
+pub fn reach(net: &Net, host: &HostState) -> Reach {
+    sync_tunnel(net, host, false);
+    let c = net.config().host;
+    if !c.internet {
+        return Reach {
+            url: Some(lan_url(&c)),
+            cloud_note: Some(
+                "Cloud apps like claude.ai connect from the internet, so they only work when this Mac hosts for “Anyone, over the internet”."
+                    .into(),
+            ),
+            waiting: false,
+        };
+    }
+    let (cloud_note, waiting) = match host.tunnel.phase() {
+        Phase::Ready { url } => return Reach { url: Some(url), cloud_note: None, waiting: false },
+        Phase::Missing => (
+            "Cloud apps like claude.ai need the internet link, and that needs cloudflared. Open Host settings to set it up.".into(),
+            true,
+        ),
+        Phase::Failed { error } => {
+            let stop = if error.ends_with('.') { "" } else { "." };
+            (format!("{error}{stop} Open Host settings to try again."), false)
+        }
+        Phase::Off | Phase::Starting => ("Getting a link from Cloudflare… cloud apps like claude.ai can use it once it’s ready.".into(), true),
+    };
+    Reach { url: None, cloud_note: Some(cloud_note), waiting }
+}
+
 /// Closes the tunnel when the app quits.
 pub fn stop_tunnel(app: &AppHandle) {
     let pid_file = app.state::<Net>().data_dir.join("cloudflared.pid");
