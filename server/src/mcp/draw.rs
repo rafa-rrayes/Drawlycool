@@ -309,14 +309,38 @@ pub fn move_by(draft: &mut Draft, ids: &[String], dx: f64, dy: f64) {
     for l in labels {
         add(&l, &mut moving);
     }
-    let set: HashSet<String> = moving.iter().cloned().collect();
+    let mut set: HashSet<String> = moving.iter().cloned().collect();
+    // Arrows whose shapes both move keep their exact route and just shift;
+    // arrows with only one end moving are rerouted.
+    let bound = |e: &Value, k: &str| model::binding_target(e, k).map(str::to_owned);
+    let mut rigid: Vec<String> = Vec::new();
+    let mut reroute: Vec<String> = Vec::new();
+    for arrow in arrows_bound_to(draft, &set) {
+        let Some(el) = draft.get(&arrow) else { continue };
+        let ends = [bound(el, "startBinding"), bound(el, "endBinding")];
+        if ends.iter().all(|t| t.as_ref().is_some_and(|t| set.contains(t))) {
+            rigid.push(arrow);
+        } else {
+            reroute.push(arrow);
+        }
+    }
+    for arrow in &rigid {
+        add(arrow, &mut moving);
+        if let Some(label) = draft.get(arrow).and_then(model::bound_text_id) {
+            add(&label, &mut moving);
+        }
+    }
+    set.extend(moving.iter().cloned());
     for id in &moving {
         let Some(el) = draft.get(id) else { continue };
-        // Arrows bound at both ends follow their shapes instead.
-        let both_bound = model::kind(el) == "arrow"
-            && model::binding_target(el, "startBinding").is_some()
-            && model::binding_target(el, "endBinding").is_some();
-        if both_bound {
+        // Bound arrows with an end left behind are rerouted below instead.
+        if reroute.iter().any(|a| a == id) {
+            continue;
+        }
+        let one_end_free = model::kind(el) == "arrow"
+            && [bound(el, "startBinding"), bound(el, "endBinding")].iter().any(|t| t.as_ref().is_some_and(|t| !set.contains(t)));
+        if one_end_free {
+            reroute.push(id.clone());
             continue;
         }
         draft.update(id, |e| {
@@ -324,7 +348,7 @@ pub fn move_by(draft: &mut Draft, ids: &[String], dx: f64, dy: f64) {
             e["y"] = build::round2(model::y(e) + dy).into();
         });
     }
-    for arrow in arrows_bound_to(draft, &set) {
+    for arrow in reroute {
         build::reroute(draft, &arrow);
     }
 }
@@ -830,4 +854,44 @@ pub fn update_one(draft: &mut Draft, id: &str, a: &Args, out: &mut Outcome) -> R
     out.updated += 1;
     out.touch(id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Map};
+
+    #[test]
+    fn moving_both_ends_keeps_an_arrows_route() {
+        let mut d = Draft::new(Vec::new(), Map::new(), None);
+        let (mut cur, mut out) = (Cursor { last: None }, Outcome::default());
+        for spec in [
+            json!({"id": "a", "type": "rectangle", "label": "A", "x": 0, "y": 0}),
+            json!({"id": "b", "type": "rectangle", "label": "B", "x": 400, "y": 200}),
+            json!({"id": "c", "type": "rectangle", "label": "C", "x": 0, "y": 400}),
+            json!({"id": "ab", "type": "arrow", "from": "a", "to": "b", "route": "elbow", "label": "go"}),
+            json!({"id": "bc", "type": "arrow", "from": "b", "to": "c", "route": "elbow"}),
+        ] {
+            draw_one(&mut d, &spec, &mut cur, &mut out, None).unwrap();
+        }
+        let shape = |d: &Draft, id: &str| {
+            let e = d.get(id).unwrap();
+            (model::x(e), model::y(e), model::abs_points(e))
+        };
+        let label = model::bound_text_id(d.get("ab").unwrap()).unwrap().to_owned();
+        let (ax, ay, apts) = shape(&d, "ab");
+        let (lx, ly) = (model::x(d.get(&label).unwrap()), model::y(d.get(&label).unwrap()));
+        let bc_before = shape(&d, "bc").2;
+        move_by(&mut d, &["a".into(), "b".into()], 100.0, 300.0);
+        let (ax2, ay2, apts2) = shape(&d, "ab");
+        assert_eq!((ax2, ay2), (ax + 100.0, ay + 300.0));
+        assert_eq!(apts.len(), apts2.len());
+        for (p, q) in apts.iter().zip(&apts2) {
+            assert!((q.0 - p.0 - 100.0).abs() < 0.01 && (q.1 - p.1 - 300.0).abs() < 0.01);
+        }
+        let l = d.get(&label).unwrap();
+        assert_eq!((model::x(l), model::y(l)), (lx + 100.0, ly + 300.0));
+        // c stayed put, so b → c is rerouted rather than shifted.
+        assert_ne!(shape(&d, "bc").2, bc_before);
+    }
 }
