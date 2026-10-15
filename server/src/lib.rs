@@ -13,11 +13,15 @@
 //!   DELETE /api/canvases/{id}
 //!   GET    /api/canvases/{id}/scene      -> .excalidraw JSON
 //!   GET    /api/canvases/{id}/ws         -> live session (see `ClientMsg`)
+//!   POST   /mcp                          -> MCP endpoint for AI assistants (see `mcp`)
 //!
 //! Live sessions exchange JSON text frames. The client opens with `hello`, the
 //! server answers with `init` (the whole scene and who's there), then both
 //! sides send changes. Elements are merged with Excalidraw's own rules (see
 //! `scene.rs`), so every client converges on the same canvas.
+
+// The MCP tool schemas are large `json!` literals.
+#![recursion_limit = "512"]
 
 pub mod fractional;
 pub mod mcp;
@@ -125,6 +129,9 @@ struct Peer {
     /// cursor colour from it.
     user_id: String,
     tx: UnboundedSender<Outgoing>,
+    /// Last known cursor position and selection, for the MCP agent to see.
+    pointer: Option<(f64, f64)>,
+    selected: Vec<String>,
 }
 
 impl Peer {
@@ -155,6 +162,8 @@ struct Hub {
     token: String,
     storage: Mutex<Storage>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
+    /// AI assistants connected over MCP.
+    mcp: mcp::Sessions,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -340,7 +349,14 @@ async fn session(hub: Arc<Hub>, canvas_id: String, socket: WebSocket) {
             false
         } else {
             let user_id = Some(clip(&user_id, 64)).filter(|u| !u.is_empty()).unwrap_or_else(|| peer_id.clone());
-            let peer = Peer { name: clip(&name, 40), color: clip(&color, 32), user_id, tx: tx.clone() };
+            let peer = Peer {
+                name: clip(&name, 40),
+                color: clip(&color, 32),
+                user_id,
+                tx: tx.clone(),
+                pointer: None,
+                selected: Vec::new(),
+            };
             let init = json!({
                 "type": "init",
                 "you": peer_id,
@@ -402,7 +418,13 @@ fn close_frame(code: u16, reason: &str) -> Message {
 }
 
 fn handle_message(hub: &Arc<Hub>, room: &Arc<Room>, me: &str, raw: &str) {
-    let Ok(msg) = serde_json::from_str::<ClientMsg>(raw) else { return };
+    if let Ok(msg) = serde_json::from_str::<ClientMsg>(raw) {
+        apply_message(hub, room, me, msg);
+    }
+}
+
+/// Applies one message from peer `me` (a WebSocket client or the MCP agent).
+fn apply_message(hub: &Arc<Hub>, room: &Arc<Room>, me: &str, msg: ClientMsg) {
     let mut st = lock(&room.state);
     if st.deleted {
         return;
@@ -432,6 +454,15 @@ fn handle_message(hub: &Arc<Hub>, room: &Arc<Room>, me: &str, raw: &str) {
             }
         }
         ClientMsg::Pointer { pointer, button, selected_element_ids } => {
+            if let Some(peer) = st.peers.get_mut(me) {
+                let coord = |k: &str| pointer.get(k).and_then(Value::as_f64);
+                if let (Some(x), Some(y)) = (coord("x"), coord("y")) {
+                    peer.pointer = Some((x, y));
+                }
+                if let Some(ids) = selected_element_ids.as_object() {
+                    peer.selected = ids.iter().filter(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k.clone()).collect();
+                }
+            }
             let msg = json!({
                 "type": "pointer",
                 "from": me,
@@ -627,9 +658,11 @@ fn router(hub: Arc<Hub>) -> Router {
         .route("/canvases/{id}/scene", get(scene))
         .route("/canvases/{id}/ws", get(ws_route))
         .layer(middleware::from_fn_with_state(hub.clone(), auth));
+    let mcp = post(mcp::post).get(mcp::get).delete(mcp::delete).route_layer(middleware::from_fn_with_state(hub.clone(), auth));
     Router::new()
         .route("/", get(|| async { "Drawlycool sync server. Open an invite link in Drawlycool to connect.\n" }))
         .nest("/api", api)
+        .route("/mcp", mcp)
         .layer(DefaultBodyLimit::max(MAX_MESSAGE))
         .with_state(hub)
 }
@@ -652,6 +685,7 @@ impl Server {
             token: config.token,
             storage: Mutex::new(storage),
             rooms: Mutex::new(HashMap::new()),
+            mcp: mcp::Sessions::default(),
         });
         let listener = tokio::net::TcpListener::bind(config.addr).await?;
         let local_addr = listener.local_addr()?;

@@ -113,6 +113,10 @@ impl Scene {
         list
     }
 
+    pub fn get(&self, id: &str) -> Option<&Value> {
+        self.elements.get(id)
+    }
+
     pub fn files(&self) -> &Map<String, Value> {
         &self.files
     }
