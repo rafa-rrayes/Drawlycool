@@ -19,6 +19,8 @@
 //! sides send changes. Elements are merged with Excalidraw's own rules (see
 //! `scene.rs`), so every client converges on the same canvas.
 
+pub mod fractional;
+pub mod mcp;
 pub mod scene;
 pub mod storage;
 
