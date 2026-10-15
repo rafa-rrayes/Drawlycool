@@ -72,6 +72,11 @@ export function App() {
     setRoute({ view: "home" });
   }, []);
 
+  const openHostSettings = useCallback(async () => {
+    await goHome();
+    setPanel({ kind: "host" });
+  }, [goHome]);
+
   const openCanvas = useCallback(async (id: string) => {
     await flushRef.current?.();
     setRoute({ view: "canvas", id });
@@ -154,6 +159,7 @@ export function App() {
         effectiveTheme={effectiveTheme}
         onThemeChange={changeTheme}
         onGoHome={goHome}
+        onHostSettings={openHostSettings}
         registerFlush={registerFlush}
       />
     );

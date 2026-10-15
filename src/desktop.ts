@@ -63,6 +63,40 @@ export type HostPatch = Partial<{
   resetToken: boolean;
 }>;
 
+/** Ready-to-paste settings for one address of a server's `/mcp` endpoint. */
+export type AiSnippets = {
+  /** `<base>/mcp[?canvas=…]`, used with an `Authorization` header. */
+  url: string;
+  /** `claude mcp add …` for Terminal. */
+  claudeCode: string;
+  /** `{"mcpServers": …}` for apps that speak HTTP MCP. */
+  jsonConfig: string;
+  /** The URL with the token in it, for apps where you can only paste a URL. */
+  connectorUrl: string;
+  /** `{"mcpServers": …}` running `npx mcp-remote`, for apps that only start local servers. */
+  bridgeConfig: string;
+};
+
+/** How an AI assistant joins a server (or one canvas on it) over MCP. */
+export type AiConnectInfo = {
+  serverName: string;
+  canvasId: string | null;
+  canvasName: string | null;
+  token: string;
+  /** Name the assistant's settings use for this server, e.g. `drawlycool-roadmap`. */
+  mcpName: string;
+  /** For assistants on this Mac (hosted servers only). */
+  localUrl: string | null;
+  /** For other machines and cloud apps; null while the internet link is on its way. */
+  remoteUrl: string | null;
+  local: AiSnippets | null;
+  remote: AiSnippets | null;
+  /** Why cloud apps such as claude.ai can't connect (yet). */
+  cloudNote: string | null;
+  /** The internet link may show up soon, so it's worth asking again. */
+  waiting: boolean;
+};
+
 /** What a live session reports: connection changes, or a server message. */
 export type SessionEvent =
   | { status: { state: "connecting" | "online" | "offline" | "closed"; error: string | null; fatal: boolean } }
@@ -169,6 +203,9 @@ export const desktop = {
     remove: (id: string) => invoke<void>("remove_server", { id }),
     inviteLink: (serverId: string, canvasId?: string) =>
       invoke<string>("invite_link", { serverId, canvasId: canvasId ?? null }),
+    /** Settings for connecting an AI assistant over MCP, starting in a canvas if given. */
+    aiConnectInfo: (serverId: string, canvasId?: string, canvasName?: string) =>
+      invoke<AiConnectInfo>("ai_connect_info", { serverId, canvasId: canvasId ?? null, canvasName: canvasName ?? null }),
     takePendingLinks: () => invoke<string[]>("take_pending_links"),
     /** A `drawlycool://` link was opened (e.g. clicked in a chat). */
     onLinkOpened(callback: () => void) {

@@ -51,6 +51,14 @@ export const linkIcon = (
   </svg>
 );
 
+export const sparklesIcon = (
+  <svg {...svgProps}>
+    <path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z" />
+    <path d="M16 6a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2z" />
+    <path d="M9 18a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z" />
+  </svg>
+);
+
 type ChipProps = {
   name: string | undefined;
   renaming: boolean;

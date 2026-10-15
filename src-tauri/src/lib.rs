@@ -536,6 +536,7 @@ pub fn run() {
             network::add_server,
             network::remove_server,
             network::invite_link,
+            network::ai_connect_info,
             network::take_pending_links,
             network::remote_list,
             network::remote_create,

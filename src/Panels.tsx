@@ -1,13 +1,22 @@
-// Small dialogs on the Welcome screen: connect to a server, host from this Mac,
-// and how you appear to others.
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { desktop, parseInvite, type HostStatus, type Profile, type ServerInfo } from "./desktop";
+// Small dialogs: connect to a server, host from this Mac, connect an AI
+// assistant, and how you appear to others.
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  desktop,
+  parseInvite,
+  type AiConnectInfo,
+  type AiSnippets,
+  type HostStatus,
+  type Profile,
+  type ServerInfo,
+} from "./desktop";
 import { RoughBox } from "./RoughBox";
 import { clientColor, initials } from "./colors";
 
 export type Panel =
   | { kind: "connect"; link?: string; auto?: boolean }
   | { kind: "host" }
+  | { kind: "ai"; serverId: string; canvasId?: string; canvasName?: string }
   | { kind: "profile" };
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -131,7 +140,15 @@ export function ConnectPanel({
 
 // ------------------------------------------------------------------ host
 
-export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+export function HostPanel({
+  onClose,
+  onChanged,
+  onConnectAi,
+}: {
+  onClose: () => void;
+  onChanged: () => void;
+  onConnectAi?: () => void;
+}) {
   const [status, setStatus] = useState<HostStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -249,6 +266,15 @@ export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChang
               </button>
             </div>
           </>
+        )}
+
+        {on && status.running && onConnectAi && (
+          <p className="form__help">
+            Want Claude to draw with you?{" "}
+            <button className="link-button" onClick={onConnectAi}>
+              Connect an AI assistant…
+            </button>
+          </p>
         )}
 
         {on && (
@@ -379,6 +405,194 @@ function InternetInvite({
         Free, through Cloudflare. The address changes each time Drawlycool restarts, so send a fresh link then.
       </p>
     </>
+  );
+}
+
+// ------------------------------------------------------------------ AI assistants
+
+type AiClient = "claude-code" | "claude-cloud" | "other";
+
+const AI_CLIENTS: { id: AiClient; label: string }[] = [
+  { id: "claude-code", label: "Claude Code" },
+  { id: "claude-cloud", label: "Claude Desktop & claude.ai" },
+  { id: "other", label: "Other apps" },
+];
+
+/** Settings that let an AI assistant join a server (or one canvas) over MCP and draw live. */
+export function AiConnectPanel({
+  serverId,
+  canvasId,
+  canvasName,
+  onClose,
+  onHostSettings,
+}: {
+  serverId: string;
+  canvasId?: string;
+  canvasName?: string;
+  onClose: () => void;
+  /** Shown when cloud apps need hosting changes first. */
+  onHostSettings?: () => void;
+}) {
+  const [info, setInfo] = useState<AiConnectInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [client, setClient] = useState<AiClient>("claude-code");
+
+  const load = useCallback(async () => {
+    try {
+      setInfo(await desktop.servers.aiConnectInfo(serverId, canvasId, canvasName));
+      setError(null);
+    } catch (err) {
+      setError(message(err));
+    }
+  }, [serverId, canvasId, canvasName]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Watch for the internet link coming up (or cloudflared being installed).
+  useEffect(() => {
+    if (!info?.waiting) return;
+    const timer = window.setInterval(load, 1500);
+    return () => window.clearInterval(timer);
+  }, [info?.waiting, load]);
+
+  const title = "Connect an AI assistant";
+  if (!info) {
+    return (
+      <Modal title={title} onClose={onClose}>
+        <div className="form">
+          {error ? <p className="form__error">{error}</p> : <p className="form__help">Loading…</p>}
+          <div className="form__actions">
+            <button className="text-button text-button--primary" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  // Assistants on this Mac use the local address; everything else the remote one.
+  const nearby = (info.local ?? info.remote) as AiSnippets;
+  const cloud = info.remote && !info.cloudNote ? info.remote : null;
+  const where = info.canvasName ? (
+    <>
+      It starts in <em>{info.canvasName}</em>.
+    </>
+  ) : (
+    <>
+      It can open any canvas on <em>{info.serverName}</em>; just ask.
+    </>
+  );
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="form">
+        <p className="form__help">
+          Lets Claude or another AI assistant join {info.canvasId ? "this canvas" : "your canvases"} and draw with you
+          live; it shows up with its own cursor. {where}
+        </p>
+
+        <div className="segmented segmented--fit" role="group" aria-label="AI assistant">
+          {AI_CLIENTS.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className={`segmented__option${client === c.id ? " segmented__option--on" : ""}`}
+              aria-pressed={client === c.id}
+              onClick={() => setClient(c.id)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        {client === "claude-code" && (
+          <>
+            <CodeBox text={nearby.claudeCode} />
+            <p className="form__help">
+              Run this in Terminal, then start <code>claude</code> and ask it to draw something.
+            </p>
+          </>
+        )}
+
+        {client === "claude-cloud" &&
+          (cloud ? (
+            <>
+              <CodeBox text={cloud.connectorUrl} />
+              <p className="form__help">
+                In Claude Desktop or claude.ai, open Settings → Connectors → <em>Add custom connector</em> and paste this
+                URL. Then ask Claude to draw something.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="setup">
+                <p className="setup__title">{info.cloudNote}</p>
+                {info.waiting && (
+                  <p className="form__help setup__waiting">Waiting for the internet link… the URL shows up here by itself.</p>
+                )}
+                {serverId === "this-mac" && onHostSettings && (
+                  <div>
+                    <button className="text-button text-button--primary" onClick={onHostSettings}>
+                      Open Host settings
+                    </button>
+                  </div>
+                )}
+              </div>
+              <p className="form__help">
+                Meanwhile, Claude Desktop can connect through a local bridge (needs Node.js): open Settings → Developer →{" "}
+                <em>Edit Config</em>, add this to <code>claude_desktop_config.json</code>, and restart Claude.
+              </p>
+              <CodeBox text={nearby.bridgeConfig} block />
+            </>
+          ))}
+
+        {client === "other" && (
+          <>
+            <p className="form__help">For apps that connect to MCP servers over HTTP, like Cursor or Windsurf:</p>
+            <CodeBox text={nearby.jsonConfig} block />
+            <p className="form__help">For apps that only run local commands (needs Node.js):</p>
+            <CodeBox text={nearby.bridgeConfig} block />
+            {info.local && info.remote && (
+              <p className="form__help">
+                On another computer, use <code>{info.remote.url}</code> as the URL instead.
+              </p>
+            )}
+          </>
+        )}
+
+        <p className="form__help">
+          These contain this server’s access token: anyone with it can edit every canvas here. Share it like a password.
+        </p>
+        {error && <p className="form__error">{error}</p>}
+
+        <div className="form__actions">
+          <button className="text-button text-button--primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** A command or config to paste somewhere, with a Copy button. */
+function CodeBox({ text, block = false }: { text: string; block?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    await desktop.copyText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+  return (
+    <div className={`invite${block ? " invite--block" : ""}`}>
+      <code className={`invite__url ${block ? "invite__url--code" : "invite__url--wrap"}`}>{text}</code>
+      <button className="text-button text-button--primary" onClick={copy}>
+        {copied ? "Copied!" : "Copy"}
+      </button>
+    </div>
   );
 }
 
