@@ -8,7 +8,14 @@ import type {
 } from "@excalidraw/excalidraw/types";
 import type { OrderedExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import { desktop, type CanvasMeta, type ThemePreference } from "./desktop";
-import { CanvasChip, EditorMainMenu, UI_OPTIONS, exposeApi, useEditorHousekeeping } from "./editorChrome";
+import {
+  CanvasChip,
+  EditorMainMenu,
+  UI_OPTIONS,
+  exposeApi,
+  useEditorHousekeeping,
+  usePinchZoomCache,
+} from "./editorChrome";
 
 const SCENE_SAVE_DELAY = 400;
 const VIEWPORT_SAVE_DELAY = 800;
@@ -35,6 +42,7 @@ export function CanvasEditor({ id, themePreference, effectiveTheme, onThemeChang
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  usePinchZoomCache(apiRef);
 
   // ------------------------------------------------------------ loading
 

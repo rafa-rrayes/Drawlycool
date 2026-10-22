@@ -37,6 +37,7 @@ import {
   linkIcon,
   sparklesIcon,
   useEditorHousekeeping,
+  usePinchZoomCache,
 } from "./editorChrome";
 import { AiConnectPanel } from "./Panels";
 
@@ -140,6 +141,7 @@ export function RemoteCanvasEditor({
   const [aiPanel, setAiPanel] = useState(false);
 
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  usePinchZoomCache(apiRef);
   const sessionRef = useRef<Session | null>(null);
   const sync = useRef<SyncState>(newSyncState());
   const profileRef = useRef(profile);

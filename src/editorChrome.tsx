@@ -1,6 +1,6 @@
 // Pieces shared by the local and remote canvas editors.
-import { useCallback, useRef, type ReactNode, type RefObject } from "react";
-import { MainMenu } from "@excalidraw/excalidraw";
+import { useCallback, useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { CaptureUpdateAction, MainMenu } from "@excalidraw/excalidraw";
 import type { AppState, ExcalidrawImperativeAPI, UIOptions } from "@excalidraw/excalidraw/types";
 import type { ThemePreference } from "./desktop";
 
@@ -169,6 +169,36 @@ export function useEditorHousekeeping(
     },
     [apiRef, effectiveTheme, onThemeChange],
   );
+}
+
+/** Same settle time Excalidraw uses after ⌘-scroll zooming. */
+const PINCH_SETTLE_DELAY = 300;
+
+/**
+ * WebKit delivers trackpad pinches as Safari `gesture*` events, and
+ * Excalidraw's handler for those redraws every visible shape from scratch at
+ * each zoom step. Its ⌘-scroll zoom avoids that by stretching the shapes it
+ * already drew until the zoom settles (`shouldCacheIgnoreZoom`), then redrawing
+ * them sharp once. Do the same for pinches.
+ */
+export function usePinchZoomCache(apiRef: RefObject<ExcalidrawImperativeAPI | null>) {
+  useEffect(() => {
+    let settleTimer: number | undefined;
+    const setIgnoreZoom = (shouldCacheIgnoreZoom: boolean) =>
+      apiRef.current?.updateScene({ appState: { shouldCacheIgnoreZoom }, captureUpdate: CaptureUpdateAction.NEVER });
+    const onPinch = () => {
+      if (!apiRef.current?.getAppState().shouldCacheIgnoreZoom) setIgnoreZoom(true);
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => setIgnoreZoom(false), PINCH_SETTLE_DELAY);
+    };
+    document.addEventListener("gesturestart", onPinch);
+    document.addEventListener("gesturechange", onPinch);
+    return () => {
+      window.clearTimeout(settleTimer);
+      document.removeEventListener("gesturestart", onPinch);
+      document.removeEventListener("gesturechange", onPinch);
+    };
+  }, [apiRef]);
 }
 
 /** Exposes the editor API for debugging from the Web Inspector. */

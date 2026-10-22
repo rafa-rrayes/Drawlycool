@@ -7,6 +7,9 @@
     <script>
       // Serve Excalidraw's fonts from our own bundle instead of a CDN.
       window.EXCALIDRAW_ASSET_PATH = "/";
+      // Repaint the canvas at most once per frame (as excalidraw.com does),
+      // instead of once per wheel/pinch event while zooming or panning.
+      window.EXCALIDRAW_THROTTLE_RENDER = true;
     </script>
   </head>
   <body>
