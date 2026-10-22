@@ -510,6 +510,9 @@ pub fn run() {
             network::list_servers,
             network::add_server,
             network::remove_server,
+            network::list_recent_servers,
+            network::reconnect_server,
+            network::forget_server,
             network::invite_link,
             network::ai_connect_info,
             network::take_pending_links,
@@ -519,7 +522,7 @@ pub fn run() {
             network::remote_duplicate,
             network::remote_delete,
             network::remote_export,
-            network::move_to_server,
+            network::move_canvas,
             network::copy_text,
             network::user_full_name,
             network::remote_connect,
@@ -527,6 +530,7 @@ pub fn run() {
             network::remote_disconnect,
             host::host_status,
             host::host_update,
+            host::paused_canvases,
             #[cfg(debug_assertions)]
             e2e::e2e_result,
         ])

@@ -23,11 +23,12 @@ Or download `Drawlycool.dmg` from the [latest release](https://github.com/rafa-r
 | New canvas | Click **+ New canvas**, or press ⌘N |
 | Back to canvases | Top-right grid button, main menu → *All canvases*, or press ⌘O |
 | Rename | Click the canvas name (top-right), or right-click a card → *Rename…* |
-| Duplicate / Export / Show in Finder / Delete | Right-click a card (or its `•••` button) |
+| Duplicate / Export / Show in Finder / Delete | Right-click a card (or its `•••` button). Or drag a card to the trash that appears at the bottom |
+| Arrange | Drag cards around. The order is remembered |
 | Import `.excalidraw` files | File → Import…, or drag the files onto the Welcome screen |
 | Save | Automatic. ⌘S forces an immediate save |
 
-Local data lives in `~/Library/Application Support/Drawlycool/canvases/`. On first launch, data from the app's earlier name (`…/Excalidraw/`) is moved there. Canvases you host are in `hosted/canvases/` in the same folder. Both use this layout:
+Local data lives in `~/Library/Application Support/Drawlycool/canvases/`. On first launch, data from the app's earlier name (`…/Excalidraw/`) is moved there. Canvases in *With friends* (shared from this Mac) are in `hosted/canvases/` in the same folder. Both use this layout:
 - `index.json` holds canvas names and dates.
 - Each `<id>.excalidraw` file is a standard Excalidraw scene, so it opens in excalidraw.com and other Excalidraw tools as well.
 
@@ -37,24 +38,26 @@ Shared canvases live on a **server**. Any Mac running the app can act as one, or
 
 | Action | How |
 | --- | --- |
-| Host from your Mac | Welcome screen → **Host** (or File → Host on This Mac…), then turn on *Share canvases from this Mac* |
-| Invite someone | **Copy invite link** in the Host panel, next to a server's name, or on an open canvas (link icon by its name) |
-| Join | Click a `drawlycool://` invite link, or Welcome screen → **Connect…** and paste it |
-| Create a shared canvas | **+ New canvas** under the server's section on the Welcome screen |
-| Share an existing canvas | Right-click a local card → *Move to* → server |
+| Share from your Mac | Drag a canvas into **With friends** on the Welcome screen. Sharing turns on by itself. Settings: gear icon there, or File → Host on This Mac… |
+| Invite someone | Link icon next to a space's name, or on an open canvas (link icon by its name) |
+| Join | Click a `drawlycool://` invite link, paste one anywhere on the Welcome screen (⌘V), or **Join** (top-right). Servers you left are one click away there |
+| Create a shared canvas | **+ New canvas** in that space on the Welcome screen |
+| Move a canvas between spaces | Drag it into another space, or onto that space in the dock that appears while dragging. Also: right-click → *Move to*. It moves in either direction, so you can always bring it back to *Just me* |
 | Your name on other people's screens | Click your avatar (top-right of the Welcome screen) |
-| Let an AI assistant draw with you | Sparkles icon by a shared canvas's name, or *Connect AI Assistant…* in a server's `•••` menu. It shows the setup for Claude Code, Claude Desktop & claude.ai, and other MCP apps |
+| Let an AI assistant draw with you | Sparkles icon next to a space's name or a shared canvas's name. It shows the setup for Claude Code, Claude Desktop & claude.ai, and other MCP apps |
 
 In a shared canvas you see everyone's cursors, selections and names. Click someone's avatar to follow their viewport. Edits merge per element, so if two people move the *same* shape at once, one change wins. If the connection drops, the canvas turns read-only with a *Reconnecting…* banner until it comes back. There is no offline editing of shared canvases.
 
-**Reachability.** Under *Who can join* in the Host panel:
+While sharing is off, *With friends* still shows its canvases, dimmed. Clicking one turns sharing back on and opens it.
 
-- **Anyone, over the internet** (the default). Drawlycool runs a free [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), which gives this Mac a public `https://….trycloudflare.com` address without an account or router setup. It needs `cloudflared`, which isn't bundled. If it's missing, the panel shows a one-line install command (`brew install cloudflared`, or a download into `~/.local/bin` if you don't have Homebrew) and picks it up as soon as it's installed. The address changes each time Drawlycool restarts, so send a fresh link then.
-- **Same network or VPN.** Pick one of this Mac's addresses: the `.local` name or LAN IP for people on the same network, the Tailscale IP for people on your tailnet, or a public IP if you have one.
+**Reachability.** Under *Who can join* in the sharing settings:
+
+- **Anywhere** (the default). Drawlycool runs a free [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), which gives this Mac a public `https://….trycloudflare.com` address without an account or router setup. It needs `cloudflared`, which isn't bundled. If it's missing, the panel shows a one-line install command (`brew install cloudflared`, or a download into `~/.local/bin` if you don't have Homebrew) and picks it up as soon as it's installed. The address changes each time Drawlycool restarts, so send a fresh link then.
+- **Same Wi-Fi or VPN.** Pick one of this Mac's addresses: the `.local` name or LAN IP for people on the same network, the Tailscale IP for people on your tailnet, or a public IP if you have one.
 
 Invite links look like `drawlycool://tidy-otter.trycloudflare.com/<token>`: the host plus the access token, and a canvas id if the link is for one canvas. A port in the link means plain `http://`, no port means `https://`. Older `drawlycool://connect?server=…&token=…` links still work. A hosting Mac must be awake with Drawlycool open. The first time you host, macOS may ask to allow incoming connections (firewall) and Local Network access.
 
-**Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the Host panel issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless it goes through the Cloudflare tunnel or the server sits behind a TLS proxy, so on the *Same network* option stay on a trusted network or Tailscale/VPN. The tunnel encrypts traffic between guests and Cloudflare, but Cloudflare can see it. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
+**Security.** An invite link contains the server's access token. Anyone holding it can open, edit and delete every canvas on that server. Share it like a password. *Reset access* in the sharing settings issues a new token and invalidates old links. Traffic is plain HTTP/WebSocket unless it goes through the Cloudflare tunnel or the server sits behind a TLS proxy, so on the *Same Wi-Fi or VPN* option stay on a trusted network or Tailscale/VPN. The tunnel encrypts traffic between guests and Cloudflare, but Cloudflare can see it. Tokens for servers you've joined are kept in plain text in `servers.json` in the app's data folder.
 
 ### Draw with an AI assistant
 
@@ -141,13 +144,15 @@ Layout:
 - `src-tauri/src/lib.rs`: window, native menu, commands, and the quit-time save flush.
 - `src-tauri/src/network.rs`: saved servers, invite links, and live sessions. All networking runs in Rust; the webview only sees a channel.
 - `src-tauri/src/host.rs`: runs the server inside the app when hosting.
-- `src-tauri/src/tunnel.rs`: finds `cloudflared` and runs the Cloudflare quick tunnel for *Anyone, over the internet*.
+- `src-tauri/src/tunnel.rs`: finds `cloudflared` and runs the Cloudflare quick tunnel for *Anywhere*.
 - `src-tauri/src/e2e.rs`: a test hook that runs JS in the webview. It only exists in debug builds.
 - `src/desktop.ts`: the frontend's bridge to Rust. Scenes are sent as raw bytes, not JSON.
 - `src/platform.ts`: routes external links, "save to disk" downloads and the window title to native equivalents.
-- `src/Home.tsx`: the Welcome screen. Card outlines are drawn with rough.js.
+- `src/Home.tsx`: the Welcome screen: spaces (this Mac, shared from it, friends' servers) and their cards. Outlines are drawn with rough.js.
+- `src/cardDrag.ts`: dragging cards to rearrange them, move them between spaces or delete them.
+- `src/icons.tsx`: line icons traced through rough.js.
 - `src/CanvasEditor.tsx`: the Excalidraw editor with a trimmed menu, auto-save and library blocking.
 - `src/RemoteCanvasEditor.tsx`: the same editor connected to a server, with reconcile, cursors, follow and reconnect.
-- `src/Panels.tsx`: the Connect, Host, AI assistant and profile dialogs.
+- `src/Panels.tsx`: the Join, sharing settings, AI assistant and profile dialogs.
 
 The app is ad-hoc signed, not notarized (see *Install*). To publish a release, run `npm run dist` and attach `src-tauri/target/release/bundle/dmg/*.dmg` as `Drawlycool.dmg`. The install script always downloads `releases/latest/download/Drawlycool.dmg`.

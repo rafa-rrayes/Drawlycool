@@ -8,9 +8,11 @@ import {
   type AiSnippets,
   type HostStatus,
   type Profile,
+  type RecentServer,
   type ServerInfo,
 } from "./desktop";
 import { RoughBox } from "./RoughBox";
+import { DrawnIcon } from "./icons";
 import { clientColor, initials } from "./colors";
 
 export type Panel =
@@ -57,27 +59,34 @@ export function ConnectPanel({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recent, setRecent] = useState<RecentServer[]>([]);
   const invite = parseInvite(address);
   const needsToken = address.trim() !== "" && !invite && !address.trim().startsWith("drawlycool:");
 
-  const connect = async () => {
+  useEffect(() => {
+    desktop.servers.recent().then(setRecent);
+  }, []);
+
+  const run = async (join: () => Promise<ServerInfo>, canvasId: string | null = null) => {
     if (busy) return;
     setError(null);
-    if (address.trim().startsWith("drawlycool:") && !invite) {
-      setError("That invite link is incomplete. Ask for a new one.");
-      return;
-    }
     setBusy(true);
     try {
-      const server = invite
-        ? await desktop.servers.add(invite.server, invite.token)
-        : await desktop.servers.add(address, token);
-      onConnected(server, invite?.canvas ?? null);
+      onConnected(await join(), canvasId);
     } catch (err) {
       setError(message(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  const connect = (link = address) => {
+    const parsed = parseInvite(link);
+    if (link.trim().startsWith("drawlycool:") && !parsed) {
+      setError("That invite link is incomplete. Ask for a new one.");
+      return;
+    }
+    run(() => (parsed ? desktop.servers.add(parsed.server, parsed.token) : desktop.servers.add(link, token)), parsed?.canvas ?? null);
   };
 
   const autoRan = useRef(false);
@@ -90,7 +99,7 @@ export function ConnectPanel({
   }, []);
 
   return (
-    <Modal title="Connect to a server" onClose={onClose}>
+    <Modal title="Join friends" onClose={onClose}>
       <form
         className="form"
         onSubmit={(e) => {
@@ -98,17 +107,23 @@ export function ConnectPanel({
           connect();
         }}
       >
-        <label className="form__label">
-          Invite link or server address
-          <input
-            className="form__input"
-            autoFocus
-            spellCheck={false}
-            placeholder="drawlycool://…"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-          />
-        </label>
+        <input
+          className="form__input form__input--big"
+          autoFocus
+          spellCheck={false}
+          aria-label="Invite link"
+          placeholder="Paste their invite link"
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+          // A pasted invite is all it takes.
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text").trim();
+            if (!parseInvite(text)) return;
+            e.preventDefault();
+            setAddress(text);
+            connect(text);
+          }}
+        />
         {needsToken && (
           <label className="form__label">
             Access token
@@ -120,17 +135,43 @@ export function ConnectPanel({
             />
           </label>
         )}
-        <p className="form__help">
-          Ask whoever hosts the canvases for an invite link. Hosts copy it from <em>Host</em> on their Welcome screen,
-          or from any shared canvas.
-        </p>
+        {!address && <p className="form__help">No link yet? Ask whoever’s sharing to send you one.</p>}
         {error && <p className="form__error">{error}</p>}
+
+        {recent.length > 0 && (
+          <div className="form__label">
+            Play again with
+            <div className="chips">
+              {recent.map((r) => (
+                <span key={r.url} className="chip">
+                  <button type="button" className="chip__main" title={r.url} disabled={busy} onClick={() => run(() => desktop.servers.rejoin(r.url))}>
+                    <DrawnIcon name="cloud" size={18} />
+                    {r.name}
+                  </button>
+                  <button
+                    type="button"
+                    className="chip__forget"
+                    title="Forget"
+                    aria-label={`Forget ${r.name}`}
+                    onClick={async () => {
+                      await desktop.servers.forget(r.url);
+                      setRecent((list) => list.filter((x) => x.url !== r.url));
+                    }}
+                  >
+                    <DrawnIcon name="close" size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="form__actions">
           <button type="button" className="text-button" onClick={onClose}>
             Cancel
           </button>
           <button type="submit" className="text-button text-button--primary" disabled={busy || !address.trim()}>
-            {busy ? "Connecting…" : "Connect"}
+            {busy ? "Joining…" : "Join"}
           </button>
         </div>
       </form>
@@ -140,15 +181,7 @@ export function ConnectPanel({
 
 // ------------------------------------------------------------------ host
 
-export function HostPanel({
-  onClose,
-  onChanged,
-  onConnectAi,
-}: {
-  onClose: () => void;
-  onChanged: () => void;
-  onConnectAi?: () => void;
-}) {
+export function HostPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [status, setStatus] = useState<HostStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -194,7 +227,7 @@ export function HostPanel({
   const selectedAddress = status.inviteAddress ?? status.addresses[0]?.address ?? "";
 
   return (
-    <Modal title="Host on this Mac" onClose={onClose}>
+    <Modal title="Sharing" onClose={onClose}>
       <div className="form">
         <label className="switch">
           <input
@@ -204,21 +237,18 @@ export function HostPanel({
             onChange={(e) => update({ enabled: e.target.checked })}
           />
           <span className="switch__track" />
-          <span>Share canvases from this Mac</span>
+          <span>Share “With friends” from this Mac</span>
         </label>
 
-        <p className="form__help">
-          Canvases you create under <em>{status.name || "this Mac"}</em> on the Welcome screen can be opened and
-          edited live by anyone with the invite link, while this Mac is awake and Drawlycool is open.
-        </p>
+        <p className="form__help">Friends with the invite link can draw there while this Mac is awake and Drawlycool is open.</p>
 
         {on && status.running && (
           <div className="form__label">
             Who can join
             <div className="segmented" role="group">
               {[
-                { internet: true, label: "Anyone, over the internet" },
-                { internet: false, label: "Same network or VPN" },
+                { internet: true, label: "Anywhere" },
+                { internet: false, label: "Same Wi-Fi or VPN" },
               ].map((o) => (
                 <button
                   key={o.label}
@@ -268,19 +298,10 @@ export function HostPanel({
           </>
         )}
 
-        {on && status.running && onConnectAi && (
-          <p className="form__help">
-            Want Claude to draw with you?{" "}
-            <button className="link-button" onClick={onConnectAi}>
-              Connect an AI assistant…
-            </button>
-          </p>
-        )}
-
         {on && (
           <div className="form__row">
             <label className="form__label form__label--grow">
-              Name others see
+              Name friends see
               <input
                 className="form__input"
                 defaultValue={status.name}
@@ -362,17 +383,15 @@ function InternetInvite({
     };
     return (
       <div className="setup">
-        <p className="setup__title">To host over the internet, install cloudflared</p>
-        <p className="form__help">
-          It’s Cloudflare’s free connector: no account, no router settings. Paste this in Terminal, once:
-        </p>
+        <p className="setup__title">One-time setup: paste this in Terminal</p>
+        <p className="form__help">It installs cloudflared, Cloudflare’s free connector. No account needed.</p>
         <div className="invite">
           <code className="invite__url invite__url--wrap">{status.installCommand}</code>
           <button className="text-button text-button--primary" onClick={copyCommand}>
             {copiedCommand ? "Copied!" : "Copy"}
           </button>
         </div>
-        <p className="form__help setup__waiting">Waiting for cloudflared… your invite link shows up here by itself.</p>
+        <p className="form__help setup__waiting">Waiting… the invite link shows up by itself.</p>
       </div>
     );
   }
@@ -401,9 +420,7 @@ function InternetInvite({
           {copied ? "Copied!" : "Copy invite link"}
         </button>
       </div>
-      <p className="form__help">
-        Free, through Cloudflare. The address changes each time Drawlycool restarts, so send a fresh link then.
-      </p>
+      <p className="form__help">The link changes when Drawlycool restarts.</p>
     </>
   );
 }

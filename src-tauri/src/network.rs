@@ -43,6 +43,20 @@ pub struct SavedServer {
     pub name: String,
 }
 
+/// A server you've connected to. Kept after you remove it, so the Connect
+/// panel can offer it again without a fresh invite.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentServer {
+    pub url: String,
+    pub token: String,
+    pub name: String,
+    pub last_connected: f64,
+}
+
+/// How many recent connections to remember.
+const MAX_RECENT: usize = 8;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HostConfig {
@@ -73,7 +87,18 @@ impl Default for HostConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct NetConfig {
     pub servers: Vec<SavedServer>,
+    /// Most recent first.
+    pub recent: Vec<RecentServer>,
     pub host: HostConfig,
+}
+
+impl NetConfig {
+    /// Moves a server to the top of the recent list (one entry per address).
+    fn remember(&mut self, server: RecentServer) {
+        self.recent.retain(|r| r.url != server.url);
+        self.recent.insert(0, server);
+        self.recent.truncate(MAX_RECENT);
+    }
 }
 
 pub struct Net {
@@ -248,7 +273,11 @@ pub fn list_servers(net: Net_, host: State<host::HostState>) -> Vec<ServerView> 
 /// Checks the address and token, then remembers the server.
 #[tauri::command]
 pub async fn add_server(net: Net_<'_>, url: String, token: String) -> Result<ServerView> {
-    let url = normalize_url(&url)?;
+    connect_server(&net, &url, &token).await
+}
+
+async fn connect_server(net: &Net, url: &str, token: &str) -> Result<ServerView> {
+    let url = normalize_url(url)?;
     let token = token.trim().to_owned();
     if token.is_empty() {
         return Err("Enter the access token.".into());
@@ -272,6 +301,7 @@ pub async fn add_server(net: Net_<'_>, url: String, token: String) -> Result<Ser
             c.servers.push(s.clone());
             saved = Some(s);
         }
+        c.remember(RecentServer { url: url.clone(), token: token.clone(), name: name.clone(), last_connected: storage::now_ms() });
     })?;
     let s = saved.expect("saved");
     Ok(ServerView { id: s.id, name: s.name, url: s.url, is_host: false })
@@ -279,7 +309,54 @@ pub async fn add_server(net: Net_<'_>, url: String, token: String) -> Result<Ser
 
 #[tauri::command]
 pub fn remove_server(net: Net_, id: String) -> Result<()> {
-    net.update_config(|c| c.servers.retain(|s| s.id != id)).map(|_| ())
+    net.update_config(|c| {
+        let Some(i) = c.servers.iter().position(|s| s.id == id) else { return };
+        let s = c.servers.remove(i);
+        // Servers joined before recents existed: keep them rejoinable too.
+        if !c.recent.iter().any(|r| r.url == s.url) {
+            c.remember(RecentServer { url: s.url, token: s.token, name: s.name, last_connected: storage::now_ms() });
+        }
+    })
+    .map(|_| ())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentView {
+    url: String,
+    name: String,
+    last_connected: f64,
+}
+
+/// Recent connections that aren't in your server list right now.
+#[tauri::command]
+pub fn list_recent_servers(net: Net_) -> Vec<RecentView> {
+    let config = net.config();
+    config
+        .recent
+        .into_iter()
+        .filter(|r| !config.servers.iter().any(|s| s.url == r.url))
+        .map(|r| RecentView { url: r.url, name: r.name, last_connected: r.last_connected })
+        .collect()
+}
+
+/// Joins a recent server again with the token it had last time.
+#[tauri::command]
+pub async fn reconnect_server(net: Net_<'_>, url: String) -> Result<ServerView> {
+    let token = net
+        .config()
+        .recent
+        .into_iter()
+        .find(|r| r.url == url)
+        .map(|r| r.token)
+        .ok_or("This connection isn’t in your recent list anymore.")?;
+    connect_server(&net, &url, &token).await
+}
+
+/// Drops a recent connection, token and all.
+#[tauri::command]
+pub fn forget_server(net: Net_, url: String) -> Result<()> {
+    net.update_config(|c| c.recent.retain(|r| r.url != url)).map(|_| ())
 }
 
 /// The `drawlycool://` invite link for a server or one of its canvases.
@@ -548,20 +625,41 @@ pub async fn remote_export(
     Ok(true)
 }
 
-/// Uploads a local canvas to a server and, once it's there, removes the local copy.
+/// Moves a canvas between this Mac (`None`) and servers. The original is
+/// removed only once the copy has arrived. Resolves with the copy's metadata.
 #[tauri::command]
-pub async fn move_to_server(
+pub async fn move_canvas(
     net: Net_<'_>,
     store: crate::Store<'_>,
     canvas_id: String,
-    server_id: String,
-) -> Result<Option<Value>> {
-    let (meta, _) = crate::lock(&store).meta(&canvas_id)?;
-    let scene = String::from_utf8(crate::lock(&store).load_scene(&canvas_id)?).map_err(|e| e.to_string())?;
-    let body = json!({ "name": meta.name, "scene": scene });
-    let remote = json_of(call(&net, &server_id, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await?;
-    crate::lock(&store).remove(&canvas_id)?;
-    Ok(Some(remote))
+    name: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Value> {
+    if from == to {
+        return Err("It’s already there.".into());
+    }
+    let scene = match &from {
+        None => String::from_utf8(crate::lock(&store).load_scene(&canvas_id)?).map_err(|e| e.to_string())?,
+        Some(server) => {
+            let path = format!("/api/canvases/{canvas_id}/scene");
+            call(&net, server, reqwest::Method::GET, &path, None).await?.text().await.map_err(|e| e.to_string())?
+        }
+    };
+    let copy = match &to {
+        None => serde_json::to_value(crate::lock(&store).create(&name, Some(&scene))?).map_err(|e| e.to_string())?,
+        Some(server) => {
+            let body = json!({ "name": name, "scene": scene });
+            json_of(call(&net, server, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await?
+        }
+    };
+    match &from {
+        None => crate::lock(&store).remove(&canvas_id)?,
+        Some(server) => {
+            call(&net, server, reqwest::Method::DELETE, &format!("/api/canvases/{canvas_id}"), None).await?;
+        }
+    }
+    Ok(copy)
 }
 
 #[tauri::command]

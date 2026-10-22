@@ -106,13 +106,6 @@ body,
   line-height: 1.2;
 }
 
-.home__subtitle {
-  margin: -14px 0 44px;
-  font-family: var(--hand);
-  font-weight: normal;
-  font-size: 32px;
-}
-
 .home__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -235,9 +228,6 @@ body,
 
 .card__plus {
   position: relative;
-  font-family: var(--hand);
-  font-size: 40px;
-  line-height: 1;
 }
 
 .card--editing {
@@ -515,43 +505,75 @@ body,
   background: var(--ok);
 }
 
+.status-dot--wait {
+  background: #f08c00;
+}
+
 .status-dot--off {
   background: var(--danger);
 }
 
-/* ------------------------------------------------------------------ server sections */
+/* ------------------------------------------------------------------ spaces */
 
-.home__section-meta {
+.drawn-icon {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+
+/* A section of the Welcome screen: canvases on this Mac, shared, or a friend's. */
+.space {
+  position: relative;
+  margin: 8px -20px 40px;
+  padding: 16px 20px 20px;
+  border-radius: 28px;
+  transition: background 0.15s;
+}
+
+.space--over {
+  background: var(--card-hover);
+  color: var(--accent);
+}
+
+.space__header {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: -36px 0 22px;
-  font-size: 12px;
+  gap: 10px;
+  min-height: 40px;
+  margin-bottom: 22px;
+}
+
+.space__icon {
   color: var(--muted);
 }
 
-.server {
-  margin-top: 64px;
+.space--over .space__icon {
+  color: var(--accent);
 }
 
-.server__header {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-}
-
-.server__title {
-  margin-bottom: 44px;
+.space__title {
+  margin: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--hand);
+  font-weight: normal;
+  font-size: 32px;
+  color: var(--ink);
 }
 
-.server__error {
-  font-family: var(--hand);
-  font-size: 19px;
+.space__meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 2px;
+  font-size: 13px;
   color: var(--muted);
+}
+
+.space__pending {
+  animation: setup-pulse 1.2s ease-in-out infinite;
 }
 
 .link-button {
@@ -566,10 +588,309 @@ body,
   text-decoration: underline;
 }
 
-.link-button--quiet {
+.space__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.space__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--hand);
+  font-size: 19px;
   color: var(--muted);
-  letter-spacing: 1px;
-  font-size: 11px;
+}
+
+.space--paused .card-button .card {
+  opacity: 0.55;
+}
+
+.icon-button {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--card-hover);
+  color: var(--accent);
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-button--done,
+.icon-button--done:hover:not(:disabled) {
+  color: var(--ok);
+}
+
+.copy-button {
+  position: relative;
+}
+
+.copy-button__tag {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 4px);
+  transform: translateY(-50%) rotate(-3deg);
+  font-family: var(--hand);
+  font-size: 17px;
+  white-space: nowrap;
+  color: var(--ok);
+  pointer-events: none;
+  animation: tag-pop 0.2s ease-out;
+}
+
+@keyframes tag-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-30%) rotate(-3deg) scale(0.8);
+  }
+}
+
+.tool-button--small {
+  font-size: 16px;
+  margin-left: 6px;
+}
+
+.tool-button--small .tool-button__box {
+  padding: 2px 12px;
+}
+
+/* "With friends" before anything is shared. */
+.share-zone {
+  all: unset;
+  display: block;
+  cursor: pointer;
+  border-radius: 24px;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+
+.share-zone__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 120px;
+  padding: 18px 26px;
+  border-radius: 24px;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.share-zone__text {
+  font-family: var(--hand);
+  font-size: 22px;
+}
+
+.share-zone:hover,
+.share-zone--over {
+  color: var(--accent);
+}
+
+.share-zone:hover .share-zone__box,
+.share-zone--over .share-zone__box {
+  background: var(--card-hover);
+}
+
+.share-zone--over .share-zone__box {
+  transform: scale(1.02);
+}
+
+.share-zone:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* ------------------------------------------------------------------ dragging cards */
+
+.home--carrying,
+.home--carrying * {
+  cursor: grabbing !important;
+}
+
+/* Where the carried card would land. */
+.card--gap {
+  color: var(--accent);
+  opacity: 0.6;
+}
+
+.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  transform: rotate(-3deg) scale(1.03);
+  transition: transform 0.15s, opacity 0.15s;
+  filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.16));
+}
+
+.drag-ghost .card {
+  height: 100%;
+  background: var(--bg);
+  border-radius: 24px;
+}
+
+.drag-ghost--away {
+  color: var(--accent);
+  transform: rotate(2deg) scale(0.9);
+}
+
+/* Over the dock: small, and lifted above the pointer so the target stays readable. */
+.drag-ghost--docked {
+  opacity: 0.9;
+  transform: translateY(-55%) rotate(4deg) scale(0.35);
+}
+
+.drag-ghost--trash {
+  color: var(--danger);
+  transform: translateY(-55%) rotate(12deg) scale(0.35);
+}
+
+/* Every other place the carried card can go. */
+.dock {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: 34px;
+  display: flex;
+  gap: 14px;
+  padding: 10px;
+  transform: translateX(-50%);
+  animation: dock-in 0.18s ease-out;
+}
+
+@keyframes dock-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 24px);
+  }
+}
+
+.dock__target {
+  color: var(--ink);
+  transition: transform 0.15s, color 0.15s;
+}
+
+.dock__box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 96px;
+  max-width: 150px;
+  padding: 12px 14px 8px;
+  border-radius: 20px;
+  background: var(--bg);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.12);
+}
+
+.dock__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--hand);
+  font-size: 17px;
+}
+
+.dock__target--hot {
+  color: var(--accent);
+  transform: translateY(-6px) scale(1.06);
+}
+
+.dock__target--danger.dock__target--hot {
+  color: var(--danger);
+}
+
+/* A card that just arrived from another space. */
+.card-button--landed .card {
+  color: var(--accent);
+  animation: landed 0.7s ease-in-out 2;
+}
+
+@keyframes landed {
+  25% {
+    transform: rotate(-2.5deg);
+  }
+  75% {
+    transform: rotate(2.5deg);
+  }
+}
+
+.card-button--moving {
+  cursor: progress;
+}
+
+.card-button--moving .card {
+  opacity: 0.5;
+  animation: setup-pulse 1.2s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ join */
+
+.form__input--big {
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--field-bg);
+  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+.chip button {
+  all: unset;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.chip .chip__main {
+  gap: 7px;
+  padding: 5px 4px 5px 12px;
+  font-family: var(--hand);
+  font-size: 17px;
+  font-weight: normal;
+}
+
+.chip .chip__main:hover {
+  color: var(--accent);
+}
+
+.chip .chip__forget {
+  padding: 8px 10px 8px 6px;
+  color: var(--muted);
+}
+
+.chip .chip__forget:hover {
+  color: var(--danger);
 }
 
 /* ------------------------------------------------------------------ modals */

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import rough from "roughjs";
 
 const generator = rough.generator();
@@ -21,7 +21,7 @@ function roundedRectPath(w: number, h: number, r: number) {
   );
 }
 
-type Props = {
+type Props = Omit<HTMLAttributes<HTMLDivElement>, "children"> & {
   seed: number;
   radius?: number;
   strokeWidth?: number;
@@ -34,7 +34,7 @@ type Props = {
  * A block whose border is drawn with rough.js, matching the hand-drawn look of
  * an Excalidraw rectangle.
  */
-export function RoughBox({ seed, radius = 24, strokeWidth = 1.5, dashed, className, children }: Props) {
+export function RoughBox({ seed, radius = 24, strokeWidth = 1.5, dashed, className, children, ...rest }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
@@ -69,7 +69,7 @@ export function RoughBox({ seed, radius = 24, strokeWidth = 1.5, dashed, classNa
   }, [size, seed, radius, strokeWidth, dashed]);
 
   return (
-    <div ref={ref} className={`rough-box ${className ?? ""}`}>
+    <div ref={ref} className={`rough-box ${className ?? ""}`} {...rest}>
       <svg className="rough-box__outline" aria-hidden width="100%" height="100%">
         {paths.map((p, i) => (
           <path

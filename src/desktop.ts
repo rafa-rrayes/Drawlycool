@@ -16,13 +16,21 @@ export type ThemePreference = "light" | "dark" | "system";
 /** How you appear to other people on shared canvases. `id` is stable and picks your colour. */
 export type Profile = { name: string; id: string };
 
-export type Settings = { theme?: ThemePreference; profile?: Profile };
+export type Settings = {
+  theme?: ThemePreference;
+  profile?: Profile;
+  /** Card order on the Welcome screen, per space ("local" or a server id). */
+  canvasOrder?: Record<string, string[]>;
+};
 
 export type MenuAction = "new-canvas" | "go-home" | "import" | "save" | "connect" | "host";
 
 type ImportResult = { imported: CanvasMeta[]; errors: string[] };
 
 export type ServerInfo = { id: string; name: string; url: string; isHost: boolean };
+
+/** A server joined before and since removed, which can be rejoined in one click. */
+export type RecentServer = { url: string; name: string; lastConnected: number };
 
 /** Someone in a canvas: `id` is their connection, `userId` the person. */
 export type Peer = { id: string; name: string; color: string; userId: string };
@@ -161,10 +169,20 @@ export const desktop = {
   copyText: (text: string) => invoke<void>("copy_text", { text }),
   userFullName: () => invoke<string>("user_full_name"),
 
+  /**
+   * Moves a canvas between this Mac (`null`) and servers; the original goes
+   * once the copy has arrived. Resolves with the copy.
+   */
+  move: (canvasId: string, name: string, from: string | null, to: string | null) =>
+    invoke<CanvasMeta>("move_canvas", { canvasId, name, from, to }),
+
   servers: {
     list: () => invoke<ServerInfo[]>("list_servers"),
     add: (url: string, token: string) => invoke<ServerInfo>("add_server", { url, token }),
     remove: (id: string) => invoke<void>("remove_server", { id }),
+    recent: () => invoke<RecentServer[]>("list_recent_servers"),
+    rejoin: (url: string) => invoke<ServerInfo>("reconnect_server", { url }),
+    forget: (url: string) => invoke<void>("forget_server", { url }),
     inviteLink: (serverId: string, canvasId?: string) =>
       invoke<string>("invite_link", { serverId, canvasId: canvasId ?? null }),
     /** Settings for connecting an AI assistant over MCP, starting in a canvas if given. */
@@ -188,9 +206,6 @@ export const desktop = {
     remove: (serverId: string, canvasId: string) => invoke<boolean>("remote_delete", { serverId, canvasId }),
     exportCanvas: (serverId: string, canvasId: string, name: string) =>
       invoke<boolean>("remote_export", { serverId, canvasId, name }),
-    /** Uploads a local canvas; resolves with the remote copy, or null if cancelled. */
-    moveToServer: (canvasId: string, serverId: string) =>
-      invoke<RemoteCanvas | null>("move_to_server", { canvasId, serverId }),
 
     async connect(serverId: string, canvasId: string, profile: Profile, onEvent: (e: SessionEvent) => void): Promise<Session> {
       const channel = new Channel<SessionEvent>(onEvent);
@@ -213,6 +228,8 @@ export const desktop = {
   host: {
     status: () => invoke<HostStatus>("host_status"),
     update: (patch: HostPatch) => invoke<HostStatus>("host_update", { patch }),
+    /** Canvases shared from this Mac, while sharing is off. */
+    paused: () => invoke<CanvasMeta[]>("paused_canvases"),
   },
 
   onMenu(callback: (message: { action: MenuAction }) => void) {

@@ -1,9 +1,30 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
-import { desktop, type CanvasMeta, type Peer, type Profile, type RemoteCanvas, type ServerInfo } from "./desktop";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  desktop,
+  parseInvite,
+  type CanvasMeta,
+  type HostStatus,
+  type Peer,
+  type Profile,
+  type ServerInfo,
+} from "./desktop";
 import { RoughBox, seedFrom } from "./RoughBox";
 import { AiConnectPanel, ConnectPanel, HostPanel, ProfilePanel, type Panel } from "./Panels";
 import { ui, anchorOf, type Anchor, type MenuEntry } from "./ui";
 import { clientColor, initials } from "./colors";
+import { DrawnIcon, type IconName } from "./icons";
+import { useCardDrag, type CardDrag, type DropTarget } from "./cardDrag";
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -24,6 +45,46 @@ function timeAgo(ts: number) {
 }
 
 const LIST_POLL = 4000;
+const HOST_POLL = 2500;
+/** How long a card that just moved keeps wiggling in its new place. */
+const LANDED_FOR = 1600;
+
+/** Space ids: canvases on this Mac, the ones shared from it, or a joined server's id. */
+const LOCAL = "local";
+const HOST = "this-mac";
+
+type Card = CanvasMeta & { peers?: Peer[] };
+
+/** A place canvases live, shown as one section of the Welcome screen. */
+type Space = {
+  id: string;
+  title: string;
+  icon: IconName;
+  /** Null for canvases on this Mac, and for shared ones while sharing is off. */
+  server: ServerInfo | null;
+  /** Null while loading. */
+  canvases: Card[] | null;
+  error: string | null;
+  /** Shared from this Mac, but sharing is off. */
+  paused: boolean;
+};
+
+type RemoteList = { canvases: Card[] | null; error: string | null };
+
+const message = (err: unknown) => String((err as Error)?.message ?? err);
+
+export function alertError(title: string, err: unknown) {
+  ui.alert(title, message(err));
+}
+
+/** Cards in the order the user arranged them; ones not arranged yet (new) come first. */
+function arrange<T extends { id: string }>(list: T[], order: string[] | undefined): T[] {
+  if (!order?.length) return list;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  const fresh = list.filter((c) => !rank.has(c.id));
+  const known = list.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  return [...fresh, ...known];
+}
 
 type Props = {
   onOpen: (id: string) => void;
@@ -52,19 +113,73 @@ export function Home({
 }: Props) {
   const [canvases, setCanvases] = useState<CanvasMeta[] | null>(null);
   const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [remoteTick, setRemoteTick] = useState(0);
+  const [remote, setRemote] = useState<Record<string, RemoteList>>({});
+  const [paused, setPaused] = useState<CanvasMeta[]>([]);
+  const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
+  const [order, setOrder] = useState<Record<string, string[]>>({});
+  const [creatingIn, setCreatingIn] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
+  const [landed, setLanded] = useState<string | null>(null);
+  const [fileDrag, setFileDrag] = useState(false);
   const [, forceTick] = useState(0);
+  const scroller = useRef<HTMLDivElement>(null);
 
-  const refresh = useCallback(async () => setCanvases(await desktop.list()), []);
-  const refreshServers = useCallback(async () => setServers(await desktop.servers.list()), []);
+  const hostServer = servers.find((s) => s.isHost) ?? null;
+  const joined = servers.filter((s) => !s.isHost);
+
+  // ------------------------------------------------------------ loading
+
+  const refreshLocal = useCallback(async () => setCanvases(await desktop.list()), []);
+
+  const refreshServers = useCallback(async () => {
+    const list = await desktop.servers.list();
+    setServers(list);
+    // Shared canvases stay visible (paused) while sharing is off.
+    setPaused(list.some((s) => s.isHost) ? [] : await desktop.host.paused());
+    return list;
+  }, []);
+
+  const loadRemote = useCallback(async (serverId: string) => {
+    try {
+      const list = await desktop.remote.list(serverId);
+      setRemote((r) => ({ ...r, [serverId]: { canvases: list, error: null } }));
+    } catch (err) {
+      setRemote((r) => ({ ...r, [serverId]: { canvases: null, error: message(err) } }));
+    }
+  }, []);
 
   useEffect(() => {
-    refresh();
+    refreshLocal();
     refreshServers();
-  }, [refresh, refreshServers, refreshKey]);
+  }, [refreshLocal, refreshServers, refreshKey]);
+
+  useEffect(() => {
+    desktop.getSettings().then((s) => setOrder(s.canvasOrder ?? {}));
+  }, []);
+
+  const serverIds = servers.map((s) => s.id).join(",");
+  useEffect(() => {
+    const ids = serverIds ? serverIds.split(",") : [];
+    const loadAll = () => ids.forEach(loadRemote);
+    loadAll();
+    const timer = setInterval(loadAll, LIST_POLL);
+    return () => clearInterval(timer);
+  }, [serverIds, loadRemote]);
+
+  // Sharing's internet link takes a moment (or a one-time install): keep an eye on it.
+  const hosting = hostServer !== null;
+  useEffect(() => {
+    if (!hosting) return setHostStatus(null);
+    let live = true;
+    const load = () => desktop.host.status().then((s) => live && setHostStatus(s));
+    load();
+    const timer = setInterval(load, HOST_POLL);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [hosting]);
 
   useEffect(() => {
     // Keep "edited x minutes ago" fresh.
@@ -74,125 +189,359 @@ export function Home({
 
   useEffect(() => {
     if (!startNewCanvas) return;
-    setCreating(true);
+    setCreatingIn(LOCAL);
     onStartNewCanvasHandled();
   }, [startNewCanvas, onStartNewCanvasHandled]);
 
-  const create = async (name: string) => {
-    setCreating(false);
-    const meta = await desktop.create(name.trim() || "Untitled");
-    onOpen(meta.id);
+  useEffect(() => {
+    if (!landed) return;
+    const timer = setTimeout(() => setLanded(null), LANDED_FOR);
+    return () => clearTimeout(timer);
+  }, [landed]);
+
+  // Pasting an invite link anywhere on this screen joins it.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (panel || (e.target as HTMLElement).closest?.("input, textarea")) return;
+      const text = e.clipboardData?.getData("text").trim() ?? "";
+      if (!text.startsWith("drawlycool:")) return;
+      e.preventDefault();
+      setPanel({ kind: "connect", link: text, auto: Boolean(parseInvite(text)) });
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [panel, setPanel]);
+
+  // ------------------------------------------------------------ spaces
+
+  const spaces = ([
+    { id: LOCAL, title: "Just me", icon: "laptop", server: null, canvases, error: null, paused: false },
+    hostServer
+      ? { id: HOST, title: "With friends", icon: "friends", server: hostServer, ...listOf(remote[HOST]), paused: false }
+      : { id: HOST, title: "With friends", icon: "friends", server: null, canvases: paused, error: null, paused: true },
+    ...joined.map((s) => ({ id: s.id, title: s.name, icon: "cloud" as const, server: s, ...listOf(remote[s.id]), paused: false })),
+  ] satisfies Space[]).map((space): Space => ({ ...space, canvases: space.canvases && arrange(space.canvases, order[space.id]) }));
+
+  const spaceOf = (id: string) => spaces.find((s) => s.id === id)!;
+
+  const reload = (spaceId: string) => (spaceId === LOCAL ? refreshLocal() : loadRemote(spaceId));
+
+  const saveOrder = (spaceId: string, ids: string[]) => {
+    const next = { ...order, [spaceId]: ids };
+    setOrder(next);
+    desktop.setSettings({ canvasOrder: next });
   };
 
-  const rename = async (id: string, name: string) => {
-    setRenamingId(null);
-    if (name.trim()) await desktop.rename(id, name);
-    refresh();
+  /** Puts a card at `index` among a space's cards, remembering the arrangement. */
+  const place = (spaceId: string, id: string, index: number | null) => {
+    const ids = (spaceOf(spaceId).canvases ?? []).map((c) => c.id).filter((other) => other !== id);
+    ids.splice(Math.min(index ?? 0, ids.length), 0, id);
+    saveOrder(spaceId, ids);
   };
 
-  const showMenu = async (canvas: CanvasMeta, anchor: Anchor) => {
-    const moveTargets: MenuEntry[] = servers.map((s) => ({ id: `move:${s.id}`, text: s.name }));
-    const action = await ui.menu([
-      { id: "open", text: "Open" },
-      "separator",
-      { id: "rename", text: "Rename…" },
-      { id: "duplicate", text: "Duplicate" },
-      { text: "Move to", enabled: moveTargets.length > 0, items: moveTargets.length ? moveTargets : [{ id: "none", text: "No servers", enabled: false }] },
-      { id: "export", text: "Export…" },
-      { id: "reveal", text: "Show in Finder" },
-      "separator",
-      { id: "delete", text: "Delete…" },
-    ], anchor);
-    if (action?.startsWith("move:")) {
-      const server = servers.find((s) => `move:${s.id}` === action);
-      if (!server) return;
+  // ------------------------------------------------------------ actions
+
+  const openIn = (space: Space, canvasId: string) =>
+    space.server ? onOpenRemote(space.server, canvasId) : onOpen(canvasId);
+
+  /** Turns sharing on; null (after saying why) if it couldn't start. */
+  const startSharing = async () => {
+    try {
+      const status = await desktop.host.update({ enabled: true });
+      if (!status.running) {
+        ui.alert("Couldn’t start sharing", status.error ?? "Something went wrong.");
+        return null;
+      }
+      setHostStatus(status);
+      const list = await refreshServers();
+      await loadRemote(HOST);
+      return list.find((s) => s.isHost) ?? null;
+    } catch (err) {
+      alertError("Couldn’t start sharing", err);
+      return null;
+    }
+  };
+
+  const create = async (space: Space, name: string) => {
+    setCreatingIn(null);
+    try {
+      if (space.id === LOCAL) return onOpen((await desktop.create(name.trim() || "Untitled")).id);
+      const meta = await desktop.remote.create(space.server!.id, name.trim() || "Untitled");
+      onOpenRemote(space.server!, meta.id);
+    } catch (err) {
+      alertError("Couldn’t create the canvas", err);
+    }
+  };
+
+  const rename = async (space: Space, id: string, name: string) => {
+    setRenaming(null);
+    if (name.trim()) {
+      try {
+        if (space.id === LOCAL) await desktop.rename(id, name);
+        else await desktop.remote.rename(space.id, id, name);
+      } catch (err) {
+        alertError("Couldn’t rename", err);
+      }
+    }
+    reload(space.id);
+  };
+
+  const remove = async (space: Space, canvas: Card) => {
+    const ok = await ui.confirm({
+      title: `Delete “${canvas.name}”?`,
+      message: space.id === LOCAL ? "This can’t be undone." : "It’s deleted for everyone. This can’t be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      if (space.id === LOCAL) await desktop.remove(canvas.id);
+      else await desktop.remote.remove(space.id, canvas.id);
+    } catch (err) {
+      alertError(`Couldn’t delete “${canvas.name}”`, err);
+    }
+    reload(space.id);
+  };
+
+  const move = async (canvas: Card, from: Space, to: Space, index: number | null) => {
+    if (to.error) return ui.alert(`Can’t reach ${to.title} right now`, to.error);
+    const toFriend = to.id !== LOCAL && to.id !== HOST;
+    // Someone else's server, or people may be drawing in it: check first.
+    if (toFriend || (from.id !== LOCAL && (from.id !== HOST || canvas.peers?.length))) {
       const ok = await ui.confirm({
-        title: `Move “${canvas.name}” to ${server.name}?`,
-        message: `Everyone with access to ${server.name} will be able to see and edit it. The copy on this Mac is removed.`,
+        title: `Move “${canvas.name}” to ${to.title}?`,
+        message: [
+          toFriend && `Everyone on ${to.title} can open and edit it.`,
+          from.id !== LOCAL && `It disappears from ${from.title} for everyone.`,
+        ]
+          .filter(Boolean)
+          .join(" "),
         confirmLabel: "Move",
       });
       if (!ok) return;
-      try {
-        const moved = await desktop.remote.moveToServer(canvas.id, server.id);
-        if (moved) {
-          refresh();
-          setRemoteTick((n) => n + 1);
-        }
-      } catch (err) {
-        alertError(`Couldn’t move “${canvas.name}”`, err);
-      }
-      return;
     }
-    switch (action) {
-      case "open":
-        return onOpen(canvas.id);
-      case "rename":
-        return setRenamingId(canvas.id);
-      case "duplicate":
-        await desktop.duplicate(canvas.id);
-        return refresh();
-      case "export":
-        return desktop.exportCanvas(canvas.id);
-      case "reveal":
-        return desktop.reveal(canvas.id);
-      case "delete": {
-        const ok = await ui.confirm({
-          title: `Delete “${canvas.name}”?`,
-          message: "This canvas will be permanently deleted. This can’t be undone.",
-          confirmLabel: "Delete",
-          danger: true,
-        });
-        if (!ok) return;
-        try {
-          await desktop.remove(canvas.id);
-        } catch (err) {
-          alertError(`Couldn’t delete “${canvas.name}”`, err);
-        }
-        return refresh();
-      }
+    setMoving(canvas.id);
+    try {
+      if (to.id === HOST && to.paused && !(await startSharing())) return;
+      const copy = await desktop.move(canvas.id, canvas.name, from.id === LOCAL ? null : from.id, to.id === LOCAL ? null : to.id);
+      await Promise.all([reload(from.id), reload(to.id)]);
+      place(to.id, copy.id, index);
+      setLanded(copy.id);
+    } catch (err) {
+      alertError(`Couldn’t move “${canvas.name}”`, err);
+    } finally {
+      setMoving(null);
     }
   };
 
-  const onDrop = async (event: DragEvent) => {
+  const onDrop = (canvas: Card, fromId: string, target: DropTarget) => {
+    const from = spaceOf(fromId);
+    if (target.kind === "trash") return remove(from, canvas);
+    if (target.space !== fromId) return move(canvas, from, spaceOf(target.space), target.index);
+    if (target.index !== null) place(fromId, canvas.id, target.index);
+  };
+
+  const { drag, start } = useCardDrag<Card>(scroller, onDrop);
+
+  const copyInvite = async (serverId: string, canvasId?: string) => {
+    try {
+      await desktop.copyText(await desktop.servers.inviteLink(serverId, canvasId));
+      return true;
+    } catch (err) {
+      alertError("Couldn’t copy the invite link", err);
+      return false;
+    }
+  };
+
+  const showCardMenu = async (space: Space, canvas: Card, anchor: Anchor) => {
+    const destinations: MenuEntry[] = spaces
+      .filter((s) => s.id !== space.id)
+      .map((s) => ({ id: `move:${s.id}`, text: s.title, enabled: !s.error }));
+    const action = await ui.menu(
+      [
+        { id: "open", text: "Open" },
+        "separator",
+        { id: "rename", text: "Rename…" },
+        { id: "duplicate", text: "Duplicate" },
+        { text: "Move to", items: destinations },
+        ...(space.server
+          ? [
+              { id: "invite", text: "Copy Invite Link" },
+              { id: "ai", text: "Connect AI Assistant…" },
+            ]
+          : []),
+        { id: "export", text: "Export…" },
+        ...(space.id === LOCAL ? [{ id: "reveal", text: "Show in Finder" }] : []),
+        "separator",
+        { id: "delete", text: "Delete…" },
+      ],
+      anchor,
+    );
+    if (action?.startsWith("move:")) return move(canvas, space, spaceOf(action.slice(5)), 0);
+    try {
+      switch (action) {
+        case "open":
+          return openIn(space, canvas.id);
+        case "rename":
+          return setRenaming(canvas.id);
+        case "duplicate":
+          if (space.id === LOCAL) await desktop.duplicate(canvas.id);
+          else await desktop.remote.duplicate(space.id, canvas.id);
+          return reload(space.id);
+        case "invite":
+          return copyInvite(space.id, canvas.id);
+        case "ai":
+          return setPanel({ kind: "ai", serverId: space.id, canvasId: canvas.id, canvasName: canvas.name });
+        case "export":
+          if (space.id === LOCAL) return desktop.exportCanvas(canvas.id);
+          return await desktop.remote.exportCanvas(space.id, canvas.id, canvas.name);
+        case "reveal":
+          return desktop.reveal(canvas.id);
+        case "delete":
+          return remove(space, canvas);
+      }
+    } catch (err) {
+      alertError("Something went wrong", err);
+    }
+  };
+
+  const showServerMenu = async (space: Space, anchor: Anchor) => {
+    const action = await ui.menu([{ id: "remove", text: "Leave" }], anchor);
+    if (action !== "remove") return;
+    const ok = await ui.confirm({
+      title: `Leave ${space.title}?`,
+      message: "Its canvases stay there. You can join again from Join.",
+      confirmLabel: "Leave",
+    });
+    if (!ok) return;
+    await desktop.servers.remove(space.id);
+    refreshServers();
+  };
+
+  // ------------------------------------------------------------ files from Finder
+
+  const onFileDrop = async (event: DragEvent) => {
     event.preventDefault();
-    setDragging(false);
+    setFileDrag(false);
     const files = await Promise.all(
       [...event.dataTransfer.files].map(async (f) => ({ name: f.name, text: await f.text() })),
     );
     if (!files.length) return;
     const { imported, errors } = await desktop.importData(files);
     if (errors.length) ui.alert("Some files couldn’t be imported", errors.join("\n"));
-    if (imported.length) refresh();
+    if (imported.length) refreshLocal();
   };
 
-  const hosting = servers.some((s) => s.isHost);
+  // ------------------------------------------------------------ layout
+
+  const inviteReady = hostStatus !== null && (!hostStatus.internet || hostStatus.tunnel.state === "ready");
+
+  const headerFor = (space: Space) => {
+    if (space.id === LOCAL) return null;
+    if (space.id === HOST && space.paused) {
+      return space.canvases?.length ? (
+        <>
+          <span className="space__meta" title="Friends can’t open these until sharing is on">
+            <DrawnIcon name="moon" size={16} /> off
+          </span>
+          <SketchButton seed={23} onClick={startSharing}>
+            Turn on
+          </SketchButton>
+        </>
+      ) : null;
+    }
+    return (
+      <>
+        <span className="space__meta">
+          <span
+            className={`status-dot ${
+              space.error ? "status-dot--off" : space.id === HOST && !inviteReady ? "status-dot--wait" : "status-dot--on"
+            }`}
+          />
+          {space.id === HOST && <HostNote status={hostStatus} onSetup={() => setPanel({ kind: "host" })} />}
+        </span>
+        <span className="space__actions">
+          {!space.error && (
+            <>
+              <CopyButton
+                disabled={space.id === HOST && !inviteReady}
+                title="Copy invite link"
+                onCopy={() => copyInvite(space.id)}
+              />
+              <IconButton icon="sparkles" title="Invite an AI assistant" onClick={() => setPanel({ kind: "ai", serverId: space.id })} />
+            </>
+          )}
+          {space.id === HOST ? (
+            <IconButton icon="gear" title="Sharing settings" onClick={() => setPanel({ kind: "host" })} />
+          ) : (
+            <IconButton icon="more" title="More" onClick={(e) => showServerMenu(space, anchorOf(e))} />
+          )}
+        </span>
+      </>
+    );
+  };
+
+  const bodyFor = (space: Space) => {
+    if (space.error) {
+      return (
+        <p className="space__error">
+          {space.error}
+          <IconButton icon="retry" title="Try again" onClick={() => loadRemote(space.id)} />
+        </p>
+      );
+    }
+    if (space.id === HOST && space.paused && !space.canvases?.length) {
+      return <ShareZone over={drag?.over?.kind === "space" && drag.over.space === HOST} onClick={startSharing} />;
+    }
+    return (
+      <CardGrid
+        space={space}
+        drag={drag}
+        creating={creatingIn === space.id}
+        renaming={renaming}
+        moving={moving}
+        landed={landed}
+        onNew={() => setCreatingIn(space.id)}
+        onCreate={(name) => create(space, name)}
+        onCancelCreate={() => setCreatingIn(null)}
+        onRename={(id, name) => rename(space, id, name)}
+        onCancelRename={() => setRenaming(null)}
+        onOpen={async (canvas) => {
+          // Shared canvases while sharing is off: turn it back on, then open.
+          if (space.paused) {
+            const host = await startSharing();
+            if (host) onOpenRemote(host, canvas.id);
+            return;
+          }
+          openIn(space, canvas.id);
+        }}
+        onMenu={space.paused ? undefined : (canvas, anchor) => showCardMenu(space, canvas, anchor)}
+        onGrab={space.paused ? undefined : (e, canvas) => start(e, canvas, space.id)}
+      />
+    );
+  };
 
   return (
     <div
-      className={`home ${dragging ? "home--dragging" : ""}`}
+      className={`home ${fileDrag ? "home--dragging" : ""} ${drag ? "home--carrying" : ""}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
-          setDragging(true);
+          setFileDrag(true);
         }
       }}
       onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragging(false);
+        if (e.currentTarget === e.target) setFileDrag(false);
       }}
-      onDrop={onDrop}
+      onDrop={onFileDrop}
     >
       <RoughBox seed={7} radius={32} className="home__frame">
-        <div className="home__scroll">
+        <div className="home__scroll" ref={scroller}>
           <div className="home__toolbar">
-            <button className="tool-button" onClick={() => setPanel({ kind: "host" })} title="Share canvases from this Mac">
-              <RoughBox seed={21} radius={14} className="tool-button__box">
-                {hosting && <span className="status-dot status-dot--on" />}
-                {hosting ? "Hosting" : "Host"}
-              </RoughBox>
-            </button>
-            <button className="tool-button" onClick={() => setPanel({ kind: "connect" })} title="Open canvases someone shared with you">
+            <button className="tool-button" onClick={() => setPanel({ kind: "connect" })} title="Join a friend’s canvases">
               <RoughBox seed={22} radius={14} className="tool-button__box">
-                Connect…
+                <DrawnIcon name="join" size={20} />
+                Join
               </RoughBox>
             </button>
             <button
@@ -206,63 +555,36 @@ export function Home({
           </div>
 
           <h1 className="home__title">Welcome!</h1>
-          <h2 className="home__subtitle">Canvases</h2>
-          {servers.length > 0 && <p className="home__section-meta">On this Mac</p>}
 
-          <div className="home__grid">
-            {creating ? (
-              <RoughBox seed={11} className="card card--editing">
-                <NameInput
-                  placeholder="Name your canvas"
-                  onSubmit={create}
-                  onCancel={() => setCreating(false)}
-                />
-              </RoughBox>
-            ) : (
-              <NewCard seed={11} onClick={() => setCreating(true)} />
-            )}
-
-            {canvases?.map((canvas) =>
-              renamingId === canvas.id ? (
-                <RoughBox key={canvas.id} seed={seedFrom(canvas.id)} className="card card--editing">
-                  <NameInput
-                    initial={canvas.name}
-                    onSubmit={(name) => rename(canvas.id, name)}
-                    onCancel={() => setRenamingId(null)}
-                  />
-                </RoughBox>
-              ) : (
-                <CanvasCard
-                  key={canvas.id}
-                  canvas={canvas}
-                  onOpen={() => onOpen(canvas.id)}
-                  onMenu={(anchor) => showMenu(canvas, anchor)}
-                />
-              ),
-            )}
-          </div>
-
-          {canvases?.length === 0 && !creating && (
-            <p className="home__hint">
-              No canvases yet. Create one, or drop <code>.excalidraw</code> files here to import them.
-            </p>
-          )}
-
-          {servers.map((server) => (
-            <ServerSection
-              key={server.id}
-              server={server}
-              tick={remoteTick}
-              onOpen={(canvasId) => onOpenRemote(server, canvasId)}
-              onRemoved={refreshServers}
-              onHostSettings={() => setPanel({ kind: "host" })}
-              onConnectAi={(canvas) =>
-                setPanel({ kind: "ai", serverId: server.id, canvasId: canvas?.id, canvasName: canvas?.name })
-              }
-            />
-          ))}
+          {spaces.map((space) => {
+            const over = drag?.over?.kind === "space" && drag.over.space === space.id && drag.from !== space.id;
+            return (
+              <section
+                key={space.id}
+                className={`space${over ? " space--over" : ""}${space.paused ? " space--paused" : ""}`}
+                data-drop="space"
+                data-space={space.id}
+              >
+                <div className="space__header">
+                  <DrawnIcon name={space.icon} size={30} className="space__icon" />
+                  <h2 className="space__title" title={space.server && !space.server.isHost ? space.server.url : undefined}>
+                    {space.title}
+                  </h2>
+                  {headerFor(space)}
+                </div>
+                {bodyFor(space)}
+                {space.id === LOCAL && canvases?.length === 0 && creatingIn !== LOCAL && (
+                  <p className="home__hint">
+                    Create a canvas, or drop <code>.excalidraw</code> files here.
+                  </p>
+                )}
+              </section>
+            );
+          })}
         </div>
       </RoughBox>
+
+      {drag && <DragLayer drag={drag} spaces={spaces} />}
 
       {panel?.kind === "connect" && (
         <ConnectPanel
@@ -279,8 +601,10 @@ export function Home({
       {panel?.kind === "host" && (
         <HostPanel
           onClose={() => setPanel(null)}
-          onChanged={refreshServers}
-          onConnectAi={() => setPanel({ kind: "ai", serverId: "this-mac" })}
+          onChanged={() => {
+            refreshServers();
+            desktop.host.status().then(setHostStatus);
+          }}
         />
       )}
       {panel?.kind === "ai" && (
@@ -299,18 +623,200 @@ export function Home({
   );
 }
 
-export function alertError(title: string, err: unknown) {
-  ui.alert(title, String((err as Error)?.message ?? err));
+function listOf(list: RemoteList | undefined) {
+  return { canvases: list?.canvases ?? null, error: list?.error ?? null };
+}
+
+// ------------------------------------------------------------------ header bits
+
+function IconButton({
+  icon,
+  title,
+  onClick,
+  disabled,
+  className,
+}: {
+  icon: IconName;
+  title: string;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button className={`icon-button ${className ?? ""}`} title={title} aria-label={title} disabled={disabled} onClick={onClick}>
+      <DrawnIcon name={icon} size={20} />
+    </button>
+  );
+}
+
+/** A link icon that turns into a tick (and says so) once copied. */
+function CopyButton({ title, disabled, onCopy }: { title: string; disabled?: boolean; onCopy: () => Promise<boolean> }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <span className="copy-button">
+      <IconButton
+        icon={copied ? "check" : "link"}
+        title={disabled ? "The invite link is on its way…" : title}
+        disabled={disabled}
+        className={copied ? "icon-button--done" : ""}
+        onClick={async () => setCopied(await onCopy())}
+      />
+      {copied && <span className="copy-button__tag">Copied!</span>}
+    </span>
+  );
+}
+
+function SketchButton({ seed, onClick, children }: { seed: number; onClick: () => void; children: ReactNode }) {
+  return (
+    <button className="tool-button tool-button--small" onClick={onClick}>
+      <RoughBox seed={seed} radius={12} className="tool-button__box">
+        {children}
+      </RoughBox>
+    </button>
+  );
+}
+
+/** The one thing worth saying about sharing, if anything: the internet link isn't ready. */
+function HostNote({ status, onSetup }: { status: HostStatus | null; onSetup: () => void }) {
+  if (!status?.internet) return null;
+  switch (status.tunnel.state) {
+    case "starting":
+      return <span className="space__pending">getting a link…</span>;
+    case "missing":
+      return (
+        <button className="link-button" onClick={onSetup}>
+          one-time setup
+        </button>
+      );
+    case "failed":
+      return (
+        <button className="link-button" onClick={onSetup}>
+          no link: fix it
+        </button>
+      );
+    default:
+      return null;
+  }
+}
+
+/** "With friends" before anything is shared: a place to drop the first canvas. */
+function ShareZone({ over, onClick }: { over: boolean; onClick: () => void }) {
+  return (
+    <button className={`share-zone${over ? " share-zone--over" : ""}`} onClick={onClick}>
+      <RoughBox seed={12} dashed className="share-zone__box">
+        <DrawnIcon name="friends" size={40} />
+        <span className="share-zone__text">Drag a canvas here to draw with friends</span>
+      </RoughBox>
+    </button>
+  );
 }
 
 // ------------------------------------------------------------------ cards
 
-function NewCard({ seed, onClick, label = "New canvas" }: { seed: number; onClick: () => void; label?: string }) {
+type GridProps = {
+  space: Space;
+  drag: CardDrag<Card> | null;
+  creating: boolean;
+  renaming: string | null;
+  moving: string | null;
+  landed: string | null;
+  onNew: () => void;
+  onCreate: (name: string) => void;
+  onCancelCreate: () => void;
+  onRename: (id: string, name: string) => void;
+  onCancelRename: () => void;
+  onOpen: (canvas: Card) => void;
+  onMenu?: (canvas: Card, anchor: Anchor) => void;
+  onGrab?: (event: PointerEvent<HTMLElement>, canvas: Card) => void;
+};
+
+function CardGrid({ space, drag, creating, renaming, moving, landed, onNew, onCreate, onCancelCreate, ...card }: GridProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFlip(ref);
+
+  // While a card is carried, leave a gap where it would land.
+  const all = space.canvases ?? [];
+  const carried = drag?.from === space.id ? drag.item.id : null;
+  const items: (Card | "gap")[] = all.filter((c) => c.id !== carried);
+  const over = drag?.over;
+  if (drag && over?.kind === "space" && over.space === space.id && over.index !== null) {
+    items.splice(Math.min(over.index, items.length), 0, "gap");
+  } else if (carried && (!over || (over.kind === "space" && over.space === space.id))) {
+    items.splice(all.findIndex((c) => c.id === carried), 0, "gap");
+  }
+
+  const seedBase = seedFrom(space.id);
   return (
-    <button className="card-button" onClick={onClick}>
+    <div className="home__grid" ref={ref} data-grid={space.paused ? undefined : ""}>
+      {!space.paused &&
+        (creating ? (
+          <RoughBox seed={seedBase + 1} className="card card--editing" data-flip="new">
+            <NameInput placeholder="Name your canvas" onSubmit={onCreate} onCancel={onCancelCreate} />
+          </RoughBox>
+        ) : (
+          <NewCard seed={seedBase + 1} onClick={onNew} />
+        ))}
+      {items.map((c) =>
+        c === "gap" ? (
+          <RoughBox key="gap" seed={seedBase + 2} dashed className="card card--gap" data-flip="gap" />
+        ) : renaming === c.id ? (
+          <RoughBox key={c.id} seed={seedFrom(c.id)} className="card card--editing" data-flip={c.id}>
+            <NameInput initial={c.name} onSubmit={(name) => card.onRename(c.id, name)} onCancel={card.onCancelRename} />
+          </RoughBox>
+        ) : (
+          <CanvasCard
+            key={c.id}
+            canvas={c}
+            paused={space.paused}
+            moving={moving === c.id}
+            landed={landed === c.id}
+            onOpen={() => card.onOpen(c)}
+            onMenu={card.onMenu && ((anchor) => card.onMenu!(c, anchor))}
+            onGrab={card.onGrab && ((e) => card.onGrab!(e, c))}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Cards glide to their new spot when others move around them. */
+function useFlip(container: RefObject<HTMLElement | null>) {
+  const before = useRef(new Map<string, { x: number; y: number }>());
+  useLayoutEffect(() => {
+    const el = container.current;
+    if (!el) return;
+    const after = new Map<string, { x: number; y: number }>();
+    for (const child of el.children as HTMLCollectionOf<HTMLElement>) {
+      const key = child.dataset.flip;
+      if (!key) continue;
+      // Layout position: unaffected by scrolling and by the animations below.
+      const pos = { x: child.offsetLeft, y: child.offsetTop };
+      after.set(key, pos);
+      const prev = before.current.get(key);
+      if (prev && (prev.x !== pos.x || prev.y !== pos.y)) {
+        child.getAnimations().forEach((a) => a.cancel());
+        child.animate(
+          [{ transform: `translate(${prev.x - pos.x}px, ${prev.y - pos.y}px)` }, { transform: "none" }],
+          { duration: 180, easing: "cubic-bezier(.2,.7,.3,1)" },
+        );
+      }
+    }
+    before.current = after;
+  });
+}
+
+function NewCard({ seed, onClick }: { seed: number; onClick: () => void }) {
+  return (
+    <button className="card-button" onClick={onClick} data-flip="new" title="New canvas">
       <RoughBox seed={seed} dashed className="card card--new">
-        <span className="card__plus">+</span>
-        <span className="card__name">{label}</span>
+        <DrawnIcon name="plus" size={34} className="card__plus" />
+        <span className="card__name">New canvas</span>
       </RoughBox>
     </button>
   );
@@ -318,41 +824,61 @@ function NewCard({ seed, onClick, label = "New canvas" }: { seed: number; onClic
 
 function CanvasCard({
   canvas,
-  peers,
+  paused,
+  moving,
+  landed,
   onOpen,
   onMenu,
+  onGrab,
 }: {
-  canvas: CanvasMeta;
-  peers?: Peer[];
+  canvas: Card;
+  paused: boolean;
+  moving: boolean;
+  landed: boolean;
   onOpen: () => void;
-  onMenu: (anchor: Anchor) => void;
+  onMenu?: (anchor: Anchor) => void;
+  onGrab?: (event: PointerEvent<HTMLElement>) => void;
 }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (landed) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [landed]);
+
+  const classes = ["card-button", landed && "card-button--landed", paused && "card-button--paused", moving && "card-button--moving"];
   return (
     <button
-      className="card-button"
-      title={canvas.name}
+      ref={ref}
+      className={classes.filter(Boolean).join(" ")}
+      data-flip={canvas.id}
+      title={paused ? `${canvas.name}: opens and turns sharing back on` : canvas.name}
+      disabled={moving}
       onClick={onOpen}
+      onPointerDown={(e) => {
+        if (!(e.target as HTMLElement).closest(".card__more")) onGrab?.(e);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onMenu(anchorOf(e));
+        onMenu?.(anchorOf(e));
       }}
     >
       <RoughBox seed={seedFrom(canvas.id)} className="card">
         <span className="card__name">{canvas.name}</span>
         <span className="card__meta">Edited {timeAgo(canvas.updatedAt)}</span>
-        {peers && peers.length > 0 && <PeerStack peers={peers} />}
-        <span
-          role="button"
-          tabIndex={-1}
-          className="card__more"
-          aria-label="More actions"
-          onClick={(e) => {
-            e.stopPropagation();
-            onMenu(anchorOf(e));
-          }}
-        >
-          •••
-        </span>
+        {canvas.peers && canvas.peers.length > 0 && <PeerStack peers={canvas.peers} />}
+        {onMenu && (
+          <span
+            role="button"
+            tabIndex={-1}
+            className="card__more"
+            aria-label="More actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMenu(anchorOf(e));
+            }}
+          >
+            <DrawnIcon name="more" size={18} />
+          </span>
+        )}
       </RoughBox>
     </button>
   );
@@ -372,199 +898,69 @@ function PeerStack({ peers }: { peers: Peer[] }) {
   );
 }
 
-// ------------------------------------------------------------------ server sections
+// ------------------------------------------------------------------ while dragging
 
-function ServerSection({
-  server,
-  tick,
-  onOpen,
-  onRemoved,
-  onHostSettings,
-  onConnectAi,
-}: {
-  server: ServerInfo;
-  tick: number;
-  onOpen: (canvasId: string) => void;
-  onRemoved: () => void;
-  onHostSettings: () => void;
-  /** For the whole server, or starting in one canvas. */
-  onConnectAi: (canvas?: RemoteCanvas) => void;
-}) {
-  const [canvases, setCanvases] = useState<RemoteCanvas[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      setCanvases(await desktop.remote.list(server.id));
-      setError(null);
-    } catch (err) {
-      setError(String((err as Error)?.message ?? err));
-    }
-  }, [server.id]);
-
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, LIST_POLL);
-    return () => clearInterval(timer);
-  }, [load, tick]);
-
-  const copyInvite = async (canvasId?: string) => {
-    try {
-      await desktop.copyText(await desktop.servers.inviteLink(server.id, canvasId));
-    } catch (err) {
-      return alertError("Couldn’t copy the invite link", err);
-    }
-    if (!canvasId) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    }
-  };
-
-  const create = async (name: string) => {
-    setCreating(false);
-    try {
-      const meta = await desktop.remote.create(server.id, name.trim() || "Untitled");
-      onOpen(meta.id);
-    } catch (err) {
-      alertError("Couldn’t create the canvas", err);
-    }
-  };
-
-  const rename = async (id: string, name: string) => {
-    setRenamingId(null);
-    if (name.trim()) {
-      await desktop.remote.rename(server.id, id, name).catch((err) => alertError("Couldn’t rename", err));
-    }
-    load();
-  };
-
-  const showCanvasMenu = async (canvas: RemoteCanvas, anchor: Anchor) => {
-    const action = await ui.menu([
-      { id: "open", text: "Open" },
-      "separator",
-      { id: "rename", text: "Rename…" },
-      { id: "duplicate", text: "Duplicate" },
-      { id: "invite", text: "Copy Invite Link" },
-      { id: "ai", text: "Connect AI Assistant…" },
-      { id: "export", text: "Export…" },
-      "separator",
-      { id: "delete", text: "Delete…" },
-    ], anchor);
-    try {
-      switch (action) {
-        case "open":
-          return onOpen(canvas.id);
-        case "rename":
-          return setRenamingId(canvas.id);
-        case "duplicate":
-          await desktop.remote.duplicate(server.id, canvas.id);
-          return load();
-        case "invite":
-          return copyInvite(canvas.id);
-        case "ai":
-          return onConnectAi(canvas);
-        case "export":
-          return await desktop.remote.exportCanvas(server.id, canvas.id, canvas.name);
-        case "delete":
-          const ok = await ui.confirm({
-            title: `Delete “${canvas.name}”?`,
-            message: `It will be deleted from ${server.name} for everyone. This can’t be undone.`,
-            confirmLabel: "Delete",
-            danger: true,
-          });
-          if (!ok) return;
-          await desktop.remote.remove(server.id, canvas.id);
-          return load();
-      }
-    } catch (err) {
-      alertError("Something went wrong", err);
-    }
-  };
-
-  const showServerMenu = async (anchor: Anchor) => {
-    const action = await ui.menu(
-      server.isHost
-        ? [
-            { id: "invite", text: "Copy Invite Link" },
-            { id: "ai", text: "Connect AI Assistant…" },
-            { id: "settings", text: "Hosting Settings…" },
-          ]
-        : [
-            { id: "invite", text: "Copy Invite Link" },
-            { id: "ai", text: "Connect AI Assistant…" },
-            "separator",
-            { id: "remove", text: "Remove Server" },
-          ],
-      anchor,
-    );
-    if (action === "invite") copyInvite();
-    if (action === "ai") onConnectAi();
-    if (action === "settings") onHostSettings();
-    if (action === "remove") {
-      await desktop.servers.remove(server.id);
-      onRemoved();
-    }
-  };
-
-  const seedBase = seedFrom(server.id);
-
+/** The card under the pointer, and a dock of every other place it can go (plus the trash). */
+function DragLayer({ drag, spaces }: { drag: CardDrag<Card>; spaces: Space[] }) {
+  const over = drag.over;
+  const overTrash = over?.kind === "trash";
+  const elsewhere = over?.kind === "space" && over.space !== drag.from;
+  const docked = overTrash || (over?.kind === "space" && over.dock);
   return (
-    <section className="server">
-      <div className="server__header">
-        <h2 className="home__subtitle server__title">{server.name}</h2>
-        <button className="link-button" onClick={() => copyInvite()}>
-          {copied ? "Copied!" : "Copy invite link"}
-        </button>
-        <button className="link-button link-button--quiet" aria-label="Server actions" onClick={(e) => showServerMenu(anchorOf(e))}>
-          •••
-        </button>
+    <>
+      <div
+        className={`drag-ghost${elsewhere ? " drag-ghost--away" : ""}${docked ? " drag-ghost--docked" : ""}${overTrash ? " drag-ghost--trash" : ""}`}
+        style={{
+          left: drag.x - drag.grabX,
+          top: drag.y - drag.grabY,
+          width: drag.width,
+          height: drag.height,
+          // Shrinks toward the pointer, so the target stays visible.
+          transformOrigin: `${drag.grabX}px ${drag.grabY}px`,
+        }}
+      >
+        <RoughBox seed={seedFrom(drag.item.id)} className="card">
+          <span className="card__name">{drag.item.name}</span>
+        </RoughBox>
       </div>
-      <p className="home__section-meta">
-        <span className={`status-dot ${error ? "status-dot--off" : "status-dot--on"}`} />
-        {[server.isHost && "Hosted on this Mac", server.url.replace(/^https?:\/\//, "")].filter(Boolean).join(" · ")}
-      </p>
+      <div className="dock">
+        {spaces
+          .filter((s) => s.id !== drag.from && !s.error)
+          .map((s) => (
+            <DockTarget
+              key={s.id}
+              icon={s.icon}
+              label={s.title}
+              hot={over?.kind === "space" && over.space === s.id}
+              drop={{ "data-drop": "space", "data-space": s.id, "data-dock": "" }}
+            />
+          ))}
+        <DockTarget icon="trash" label="Delete" hot={overTrash} danger drop={{ "data-drop": "trash" }} />
+      </div>
+    </>
+  );
+}
 
-      {error ? (
-        <p className="server__error">
-          {error}{" "}
-          <button className="link-button" onClick={load}>
-            Try again
-          </button>
-        </p>
-      ) : (
-        <div className="home__grid">
-          {creating ? (
-            <RoughBox seed={seedBase + 1} className="card card--editing">
-              <NameInput placeholder="Name your canvas" onSubmit={create} onCancel={() => setCreating(false)} />
-            </RoughBox>
-          ) : (
-            <NewCard seed={seedBase + 1} onClick={() => setCreating(true)} />
-          )}
-          {canvases?.map((canvas) =>
-            renamingId === canvas.id ? (
-              <RoughBox key={canvas.id} seed={seedFrom(canvas.id)} className="card card--editing">
-                <NameInput
-                  initial={canvas.name}
-                  onSubmit={(name) => rename(canvas.id, name)}
-                  onCancel={() => setRenamingId(null)}
-                />
-              </RoughBox>
-            ) : (
-              <CanvasCard
-                key={canvas.id}
-                canvas={canvas}
-                peers={canvas.peers}
-                onOpen={() => onOpen(canvas.id)}
-                onMenu={(anchor) => showCanvasMenu(canvas, anchor)}
-              />
-            ),
-          )}
-        </div>
-      )}
-    </section>
+function DockTarget({
+  icon,
+  label,
+  hot,
+  danger,
+  drop,
+}: {
+  icon: IconName;
+  label: string;
+  hot: boolean;
+  danger?: boolean;
+  drop: Record<string, string>;
+}) {
+  return (
+    <div className={`dock__target${hot ? " dock__target--hot" : ""}${danger ? " dock__target--danger" : ""}`} {...drop}>
+      <RoughBox seed={seedFrom(label)} radius={20} className="dock__box">
+        <DrawnIcon name={icon} size={28} />
+        <span className="dock__label">{label}</span>
+      </RoughBox>
+    </div>
   );
 }
 
