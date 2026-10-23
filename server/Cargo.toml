@@ -1,6 +1,6 @@
 [package]
 name = "drawlycool-server"
-version = "1.0.0"
+version = "1.1.0"
 description = "Sync server for Drawlycool: hosts canvases that several people edit live"
 authors = ["Rafa <rafa@rayes.com.br>"]
 edition = "2021"

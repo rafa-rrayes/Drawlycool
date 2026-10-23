@@ -1,6 +1,6 @@
 [package]
 name = "drawlycool"
-version = "1.0.0"
+version = "1.1.0"
 description = "Drawlycool: hand-drawn whiteboard with local canvases and live collaboration"
 authors = ["Rafa <rafa@rayes.com.br>"]
 edition = "2021"

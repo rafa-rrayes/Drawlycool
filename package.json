@@ -1,7 +1,7 @@
 {
   "name": "drawlycool",
   "productName": "Drawlycool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Hand-drawn whiteboard for macOS with local and shared canvases, built on the Excalidraw editor",
   "author": "Rafa <rafa@rayes.com.br>",
   "private": true,
