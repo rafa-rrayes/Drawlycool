@@ -1,6 +1,7 @@
-// Dragging canvas cards on the Welcome screen: to rearrange them, to move them
-// to another space, or to the trash. Pointer events rather than HTML5 drag and
-// drop, which stays free for importing files dropped from Finder.
+// Dragging cards (canvases and folders) on the Welcome screen: to rearrange
+// them, to move them to another space, or to the trash. Pointer events rather
+// than HTML5 drag and drop, which stays free for importing files dropped from
+// Finder.
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 
 /**
@@ -42,17 +43,20 @@ export function edgeSpeed(y: number, box: DOMRect) {
 /**
  * Drop targets are marked in the DOM: `data-drop="space"` with `data-space`
  * (and an optional `data-grid` of equally sized cells inside, whose first
- * `data-lead` cells, "New canvas" and folders, aren't canvases),
+ * `data-lead` cells, "New canvas" and the like, aren't cards),
  * `data-drop="folder"` with `data-space` and `data-folder` (empty: out of any
  * folder), or `data-drop="trash"`. Dock targets also have `data-dock`.
  */
-function hitTest(x: number, y: number): DropTarget | null {
+function hitTest(x: number, y: number, intoFolders: boolean): DropTarget | null {
   for (const el of document.elementsFromPoint(x, y)) {
     const target = (el as HTMLElement).closest<HTMLElement>("[data-drop]");
     if (!target) continue;
     if (target.dataset.drop === "trash") return { kind: "trash" };
     const space = target.dataset.space!;
-    if (target.dataset.drop === "folder") return { kind: "folder", space, folder: target.dataset.folder || null };
+    if (target.dataset.drop === "folder") {
+      if (!intoFolders) continue;
+      return { kind: "folder", space, folder: target.dataset.folder || null };
+    }
     if (target.dataset.dock !== undefined) return { kind: "space", space, index: null, dock: true };
     const grid = target.querySelector<HTMLElement>("[data-grid]");
     const rect = grid?.getBoundingClientRect();
@@ -77,11 +81,18 @@ function cellAt(grid: HTMLElement, x: number, y: number) {
   return Math.max(0, row * cols + col - Number(grid.dataset.lead ?? 1));
 }
 
-export function useCardDrag<T>(scroller: RefObject<HTMLElement | null>, onDrop: (item: T, from: string, target: DropTarget) => void) {
+/** `intoFolders` says whether an item can be dropped on folders; if not, they're passed over. */
+export function useCardDrag<T>(
+  scroller: RefObject<HTMLElement | null>,
+  onDrop: (item: T, from: string, target: DropTarget) => void,
+  intoFolders: (item: T) => boolean = () => true,
+) {
   const [drag, setDrag] = useState<CardDrag<T> | null>(null);
   const live = useRef<CardDrag<T> | null>(null);
   const onDropRef = useRef(onDrop);
   onDropRef.current = onDrop;
+  const intoFoldersRef = useRef(intoFolders);
+  intoFoldersRef.current = intoFolders;
   const cleanup = useRef<(() => void) | null>(null);
 
   useEffect(() => () => cleanup.current?.(), []);
@@ -95,7 +106,7 @@ export function useCardDrag<T>(scroller: RefObject<HTMLElement | null>, onDrop: 
       let frame = 0;
 
       const update = (x: number, y: number) => {
-        const next = { ...live.current!, x, y, over: hitTest(x, y) };
+        const next = { ...live.current!, x, y, over: hitTest(x, y, intoFoldersRef.current(item)) };
         live.current = next;
         setDrag(next);
       };

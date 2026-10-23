@@ -27,8 +27,8 @@ Or download `Drawlycool.dmg` from the [latest release](https://github.com/rafa-r
 | Back to canvases | Top-right grid button, main menu → *All canvases*, or press ⌘O |
 | Rename | Click the canvas name (top-right), or right-click a card → *Rename…* |
 | Duplicate / Export / Show in Finder / Delete | Right-click a card (or its `•••` button). Or drag a card to the trash that appears at the bottom |
-| Arrange | Drag cards around. The order is remembered |
-| Folders | Folder icon next to a space's name → name it. Drag canvases onto a folder card to file them (or right-click → *Move to*). Click a folder to look inside; click the space's name above it to go back, or drop a canvas there to take it out. Deleting a folder keeps its canvases |
+| Arrange | Drag cards around, folders included (they stay ahead of canvases). The order is remembered |
+| Folders | Folder icon next to a space's name → name it. Drag canvases onto a folder card to file them (or right-click → *Move to*). Click a folder to look inside; click the space's name above it to go back, or drop a canvas there to take it out. Deleting a folder keeps its canvases. Drag a folder into another space to move it with everything in it, or onto the trash to delete it |
 | Import `.excalidraw` files | File → Import…, or drag the files onto the Welcome screen |
 | Save | Automatic. ⌘S forces an immediate save |
 

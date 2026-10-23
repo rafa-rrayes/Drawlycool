@@ -92,6 +92,9 @@ type Space = {
   shown: Card[] | null;
 };
 
+/** Cards being dragged or moved together. */
+type Carried = { canvases: Card[]; folders: Folder[] };
+
 /** Selected cards (canvases and folders), all in one space. */
 type Selection = { space: string; ids: string[] };
 
@@ -305,7 +308,8 @@ export function Home({
     const shown = space.canvases?.filter((c) => folderOf(space.folders, c) === (folder?.id ?? null));
     return {
       ...space,
-      folders: space.folders && [...space.folders].sort(byName),
+      // Alphabetical until the user arranges them; new ones come first.
+      folders: space.folders && arrange([...space.folders].sort(byName), order[space.id]),
       folder,
       shown: shown ? arrange(shown, order[orderKey(space.id, folder)]) : null,
     };
@@ -329,11 +333,18 @@ export function Home({
     desktop.setSettings({ canvasOrder: next });
   };
 
-  /** Puts cards at `index` among the cards a space shows, remembering the arrangement. */
-  const place = (space: Space, moved: string[], index: number | null) => {
-    const ids = (space.shown ?? []).map((c) => c.id).filter((id) => !moved.includes(id));
-    ids.splice(Math.min(index ?? 0, ids.length), 0, ...moved);
-    saveOrder(orderKey(space.id, space.folder), ids);
+  /**
+   * Puts cards at `index` among the cards a space shows, remembering the
+   * arrangement. Folders stay ahead of canvases: a folder dropped among the
+   * canvases goes after the last folder, a canvas dropped among the folders
+   * before the first canvas.
+   */
+  const place = (space: Space, folders: string[], canvases: string[], index: number | null) => {
+    const moved = new Set([...folders, ...canvases]);
+    const ids = itemsOf(space).filter((id) => !moved.has(id));
+    ids.splice(Math.min(index ?? 0, ids.length), 0, ...folders, ...canvases);
+    const isFolder = new Set([...(space.folders ?? []).map((f) => f.id), ...folders]);
+    saveOrder(orderKey(space.id, space.folder), [...ids.filter((id) => isFolder.has(id)), ...ids.filter((id) => !isFolder.has(id))]);
   };
 
   // ------------------------------------------------------------ colours
@@ -407,12 +418,18 @@ export function Home({
     setSelection({ space: space.id, ids });
   };
 
-  /** Dragging a card carries it, or every selected canvas if it's one of them. */
-  const press = (space: Space, event: PointerEvent<HTMLElement>, id: string, canvas?: Card) => {
+  /** Dragging a card carries it, or the whole selection if it's part of it. */
+  const press = (space: Space, event: PointerEvent<HTMLElement>, id: string) => {
     if (event.button !== 0) return;
     activeSpace.current = space.id;
-    const held = selectedIn(space).includes(id);
-    if (canvas && !space.paused) start(event, held ? picked(space).canvases : [canvas], space.id);
+    if (space.paused) return;
+    const carried = selectedIn(space).includes(id)
+      ? picked(space)
+      : {
+          canvases: (space.shown ?? []).filter((c) => c.id === id),
+          folders: (space.folder ? [] : (space.folders ?? [])).filter((f) => f.id === id),
+        };
+    start(event, carried, space.id);
   };
 
   /** Right-click (or "…") on a card: about the whole selection if it's in one, else about just that card. */
@@ -616,16 +633,22 @@ export function Home({
     reload(space.id);
   };
 
-  /** Moves canvases to another space: into `folder` there, by default the one open in it. */
-  const move = async (cards: Card[], from: Space, to: Space, index: number | null, folder = to.folder?.id ?? null) => {
-    if (!cards.length) return;
+  /**
+   * Moves canvases to another space: into `folder` there, by default the one
+   * open in it. Folders move with their canvases, to the top level there (on a
+   * server without folders, just their canvases do).
+   */
+  const move = async ({ canvases: cards, folders }: Carried, from: Space, to: Space, index: number | null, folder = to.folder?.id ?? null) => {
+    if (!cards.length && !folders.length) return;
     if (to.error) return ui.alert(`Can’t reach ${to.title} right now`, to.error);
-    const one = cards.length === 1;
+    const inside = new Map(folders.map((f) => [f.id, (from.canvases ?? []).filter((c) => folderOf(from.folders, c) === f.id)]));
+    const everything = [...cards, ...[...inside.values()].flat()];
+    const one = cards.length + folders.length === 1;
     const toFriend = to.id !== LOCAL && to.id !== HOST;
     // Someone else's server, or people may be drawing in them: check first.
-    if (toFriend || (from.id !== LOCAL && (from.id !== HOST || cards.some((c) => c.peers?.length)))) {
+    if (toFriend || (from.id !== LOCAL && (from.id !== HOST || everything.some((c) => c.peers?.length)))) {
       const ok = await ui.confirm({
-        title: `Move ${one ? `“${cards[0].name}”` : plural(cards.length, "canvas", "canvases")} to ${to.title}?`,
+        title: `Move ${one ? `“${(folders[0] ?? cards[0]).name}”` : describe(cards.length, folders.length)} to ${to.title}?`,
         message: [
           toFriend && `Everyone on ${to.title} can open and edit ${one ? "it" : "them"}.`,
           from.id !== LOCAL && `${one ? "It disappears" : "They disappear"} from ${from.title} for everyone.`,
@@ -636,41 +659,70 @@ export function Home({
       });
       if (!ok) return;
     }
-    setMoving(cards.map((c) => c.id));
+    setMoving([...folders, ...cards].map((c) => c.id));
+    const carryColor = (old: string, made: string) => {
+      const color = colorOf(from.id, old);
+      if (!color) return;
+      saveColors((all) => {
+        all[`${to.id}/${made}`] = color;
+        delete all[`${from.id}/${old}`];
+      });
+    };
+    const move1 = async (canvas: Card, into: string | null) => {
+      const copy = await desktop.move(
+        canvas.id,
+        canvas.name,
+        from.id === LOCAL ? null : from.id,
+        to.id === LOCAL ? null : to.id,
+        into ?? undefined,
+      );
+      carryColor(canvas.id, copy.id);
+      return copy.id;
+    };
+    const madeFolders: string[] = [];
     const copies: string[] = [];
     try {
       if (to.id === HOST && to.paused && !(await startSharing())) return;
-      for (const canvas of cards) {
+      let failed = false;
+      for (const f of folders) {
         try {
-          const copy = await desktop.move(
-            canvas.id,
-            canvas.name,
-            from.id === LOCAL ? null : from.id,
-            to.id === LOCAL ? null : to.id,
-            folder ?? undefined,
-          );
-          copies.push(copy.id);
-          const color = colorOf(from.id, canvas.id);
-          if (color) {
-            saveColors((all) => {
-              all[`${to.id}/${copy.id}`] = color;
-              delete all[`${from.id}/${canvas.id}`];
-            });
+          const made = !to.folders
+            ? null
+            : to.id === LOCAL
+              ? await desktop.folders.create(f.name)
+              : await desktop.remote.folders.create(to.id, f.name);
+          if (made) {
+            madeFolders.push(made.id);
+            carryColor(f.id, made.id);
           }
+          for (const canvas of inside.get(f.id)!) await move1(canvas, made?.id ?? null);
+          // Empty now.
+          if (from.id === LOCAL) await desktop.folders.remove(f.id);
+          else await desktop.remote.folders.remove(from.id, f.id);
+        } catch (err) {
+          alertError(`Couldn’t move “${f.name}”`, err);
+          failed = true;
+          break;
+        }
+      }
+      for (const canvas of failed ? [] : cards) {
+        try {
+          copies.push(await move1(canvas, folder));
         } catch (err) {
           alertError(`Couldn’t move “${canvas.name}”`, err);
           break;
         }
       }
       await Promise.all([reload(from.id), reload(to.id)]);
-      if (!copies.length) return;
-      if (folder === (to.folder?.id ?? null)) {
-        place(to, copies, index);
-        setLanded(copies[0]);
-        setSelection({ space: to.id, ids: copies });
-      } else {
-        setLanded(folder);
+      // What lands where the user is looking in the other space.
+      const shownFolders = to.folder ? [] : madeFolders;
+      const shownCopies = folder === (to.folder?.id ?? null) ? copies : [];
+      if (shownFolders.length || shownCopies.length) {
+        place(to, shownFolders, shownCopies, index);
+        setSelection({ space: to.id, ids: [...shownFolders, ...shownCopies] });
       }
+      const first = shownFolders[0] ?? shownCopies[0] ?? (copies.length ? folder : null);
+      if (first) setLanded(first);
     } catch (err) {
       alertError("Couldn’t move", err);
     } finally {
@@ -698,15 +750,18 @@ export function Home({
     }
   };
 
-  const onDrop = (cards: Card[], fromId: string, target: DropTarget) => {
+  const onDrop = (carried: Carried, fromId: string, target: DropTarget) => {
     const from = spaceOf(fromId);
-    if (target.kind === "trash") return remove(from, cards);
+    if (target.kind === "trash") return remove(from, carried.canvases, carried.folders);
+    // Only canvases are dropped on folders (see `intoFolders` below).
     if (target.kind === "folder") {
-      if (target.space === fromId) return file(from, cards, target.folder);
-      return move(cards, from, spaceOf(target.space), null, target.folder);
+      if (target.space === fromId) return file(from, carried.canvases, target.folder);
+      return move(carried, from, spaceOf(target.space), null, target.folder);
     }
-    if (target.space !== fromId) return move(cards, from, spaceOf(target.space), target.index);
-    if (target.index !== null) place(from, cards.map((c) => c.id), target.index);
+    if (target.space !== fromId) return move(carried, from, spaceOf(target.space), target.index);
+    if (target.index !== null) {
+      place(from, carried.folders.map((f) => f.id), carried.canvases.map((c) => c.id), target.index);
+    }
   };
 
   // ------------------------------------------------------------ folders
@@ -791,7 +846,8 @@ export function Home({
     if (action === "delete") removeFolder(space, folder);
   };
 
-  const { drag, start } = useCardDrag<Card[]>(scroller, onDrop);
+  // Folders don't go in folders: carrying one, the others are just cards to arrange around.
+  const { drag, start } = useCardDrag<Carried>(scroller, onDrop, (carried) => !carried.folders.length);
 
   const copyInvite = async (serverId: string, canvasId?: string) => {
     try {
@@ -826,7 +882,7 @@ export function Home({
 
   /** Carries out a pick from `destinations`; false if it wasn't one. */
   const moveTo = (action: string, space: Space, canvases: Card[]) => {
-    if (action.startsWith("move:")) move(canvases, space, spaceOf(action.slice(5)), 0);
+    if (action.startsWith("move:")) move({ canvases, folders: [] }, space, spaceOf(action.slice(5)), 0);
     else if (action.startsWith("file:")) file(space, canvases, action.slice(5) || null);
     else if (action === "new-folder") startNewFolder(space, canvases);
     else return false;
@@ -1145,7 +1201,7 @@ export function Home({
         selected={selectedIn(space)}
         colorOf={(id) => colorOf(space.id, id)}
         onSelect={(id, mods) => select(space, id, mods)}
-        onPress={(e, id, canvas) => press(space, e, id, canvas)}
+        onPress={(e, id) => press(space, e, id)}
         onFolderMenu={
           space.paused
             ? undefined
@@ -1394,9 +1450,12 @@ function ShareZone({ over, onClick }: { over: boolean; onClick: () => void }) {
 
 type Mods = { metaKey: boolean; shiftKey: boolean };
 
+/** A cell of a space's grid: a folder or a canvas. */
+type Entry = { id: string; folder?: Folder; canvas?: Card };
+
 type GridProps = {
   space: Space;
-  drag: CardDrag<Card[]> | null;
+  drag: CardDrag<Carried> | null;
   creating: boolean;
   creatingFolder: boolean;
   renaming: string | null;
@@ -1405,8 +1464,8 @@ type GridProps = {
   selected: string[];
   colorOf: (id: string) => string | null;
   onSelect: (id: string, mods: Mods) => void;
-  /** A press on a card, which may start dragging it (canvases only). */
-  onPress: (event: PointerEvent<HTMLElement>, id: string, canvas?: Card) => void;
+  /** A press on a card, which may start dragging it. */
+  onPress: (event: PointerEvent<HTMLElement>, id: string) => void;
   onNew: () => void;
   onCreate: (name: string) => void;
   onCancelCreate: () => void;
@@ -1441,25 +1500,33 @@ function CardGrid({
   const ref = useRef<HTMLDivElement>(null);
   useFlip(ref);
 
+  // Folders come first (at the top level only), then canvases.
+  const all: Entry[] = [
+    ...(space.folder ? [] : (space.folders ?? [])).map((folder) => ({ id: folder.id, folder })),
+    ...(space.shown ?? []).map((canvas) => ({ id: canvas.id, canvas })),
+  ];
+
   // While cards are carried, leave a gap where they would land.
-  const all = space.shown ?? [];
-  const carried = new Set(drag?.from === space.id ? drag.item.map((c) => c.id) : []);
-  const items: (Card | "gap")[] = all.filter((c) => !carried.has(c.id));
+  const carried = new Set(drag?.from === space.id ? [...drag.item.folders, ...drag.item.canvases].map((c) => c.id) : []);
+  const items: (Entry | "gap")[] = all.filter((e) => !carried.has(e.id));
   const over = drag?.over;
   if (drag && over?.kind === "space" && over.space === space.id && over.index !== null) {
-    items.splice(Math.min(over.index, items.length), 0, "gap");
+    // Where `place` will put them: folders stay ahead of canvases.
+    const folderCount = items.filter((e) => e !== "gap" && e.folder).length;
+    let at = Math.min(over.index, items.length);
+    if (!drag.item.canvases.length) at = Math.min(at, folderCount);
+    if (!drag.item.folders.length) at = Math.max(at, folderCount);
+    items.splice(at, 0, "gap");
   } else if (carried.size && (!over || ((over.kind === "space" || over.kind === "folder") && over.space === space.id))) {
-    items.splice(all.findIndex((c) => carried.has(c.id)), 0, "gap");
+    items.splice(all.findIndex((e) => carried.has(e.id)), 0, "gap");
   }
 
-  // Folders come first, at the top level only.
-  const folders = space.folder ? [] : (space.folders ?? []);
   const counts = new Map<string, number>();
   for (const c of space.canvases ?? []) {
     const f = folderOf(space.folders, c);
     if (f) counts.set(f, (counts.get(f) ?? 0) + 1);
   }
-  const lead = (space.paused ? 0 : 1) + (creatingFolder ? 1 : 0) + folders.length;
+  const lead = (space.paused ? 0 : 1) + (creatingFolder ? 1 : 0);
 
   const seedBase = seedFrom(space.id);
   return (
@@ -1478,53 +1545,54 @@ function CardGrid({
           <NameInput placeholder="Name your folder" onSubmit={onCreateFolder} onCancel={onCancelCreateFolder} />
         </RoughBox>
       )}
-      {folders.map((f) =>
-        renaming === f.id ? (
-          <RoughBox key={f.id} seed={seedFrom(f.id)} className="card card--editing card--folder" data-flip={f.id}>
-            <DrawnIcon name="folder" size={30} className="card__folder-icon" />
-            <NameInput initial={f.name} onSubmit={(name) => card.onRenameFolder(f, name)} onCancel={card.onCancelRename} />
-          </RoughBox>
-        ) : (
-          <FolderCard
-            key={f.id}
-            space={space.id}
-            folder={f}
-            count={counts.get(f.id) ?? 0}
-            over={over?.kind === "folder" && over.space === space.id && over.folder === f.id}
-            landed={landed === f.id}
-            selected={selected.includes(f.id)}
-            color={colorOf(f.id)}
-            onSelect={(mods) => card.onSelect(f.id, mods)}
-            onPress={(e) => card.onPress(e, f.id)}
-            onOpen={() => card.onOpenFolder(f)}
-            onMenu={card.onFolderMenu && ((anchor) => card.onFolderMenu!(f, anchor))}
-          />
-        ),
-      )}
-      {items.map((c) =>
-        c === "gap" ? (
-          <RoughBox key="gap" seed={seedBase + 2} dashed className="card card--gap" data-flip="gap" />
-        ) : renaming === c.id ? (
-          <RoughBox key={c.id} seed={seedFrom(c.id)} className="card card--editing" data-flip={c.id}>
-            <NameInput initial={c.name} onSubmit={(name) => card.onRename(c.id, name)} onCancel={card.onCancelRename} />
+      {items.map((entry) => {
+        if (entry === "gap") return <RoughBox key="gap" seed={seedBase + 2} dashed className="card card--gap" data-flip="gap" />;
+        const { folder: f, canvas: c } = entry;
+        if (f) {
+          return renaming === f.id ? (
+            <RoughBox key={f.id} seed={seedFrom(f.id)} className="card card--editing card--folder" data-flip={f.id}>
+              <DrawnIcon name="folder" size={30} className="card__folder-icon" />
+              <NameInput initial={f.name} onSubmit={(name) => card.onRenameFolder(f, name)} onCancel={card.onCancelRename} />
+            </RoughBox>
+          ) : (
+            <FolderCard
+              key={f.id}
+              space={space.id}
+              folder={f}
+              count={counts.get(f.id) ?? 0}
+              over={over?.kind === "folder" && over.space === space.id && over.folder === f.id}
+              moving={moving.includes(f.id)}
+              landed={landed === f.id}
+              selected={selected.includes(f.id)}
+              color={colorOf(f.id)}
+              onSelect={(mods) => card.onSelect(f.id, mods)}
+              onPress={(e) => card.onPress(e, f.id)}
+              onOpen={() => card.onOpenFolder(f)}
+              onMenu={card.onFolderMenu && ((anchor) => card.onFolderMenu!(f, anchor))}
+            />
+          );
+        }
+        return renaming === c!.id ? (
+          <RoughBox key={c!.id} seed={seedFrom(c!.id)} className="card card--editing" data-flip={c!.id}>
+            <NameInput initial={c!.name} onSubmit={(name) => card.onRename(c!.id, name)} onCancel={card.onCancelRename} />
           </RoughBox>
         ) : (
           <CanvasCard
-            key={c.id}
+            key={c!.id}
             space={space.id}
-            canvas={c}
+            canvas={c!}
             paused={space.paused}
-            moving={moving.includes(c.id)}
-            landed={landed === c.id}
-            selected={selected.includes(c.id)}
-            color={colorOf(c.id)}
-            onSelect={(mods) => card.onSelect(c.id, mods)}
-            onPress={(e) => card.onPress(e, c.id, c)}
-            onOpen={() => card.onOpen(c)}
-            onMenu={card.onMenu && ((anchor) => card.onMenu!(c, anchor))}
+            moving={moving.includes(c!.id)}
+            landed={landed === c!.id}
+            selected={selected.includes(c!.id)}
+            color={colorOf(c!.id)}
+            onSelect={(mods) => card.onSelect(c!.id, mods)}
+            onPress={(e) => card.onPress(e, c!.id)}
+            onOpen={() => card.onOpen(c!)}
+            onMenu={card.onMenu && ((anchor) => card.onMenu!(c!, anchor))}
           />
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -1582,6 +1650,7 @@ function FolderCard({
   folder,
   count,
   over,
+  moving,
   landed,
   selected,
   color,
@@ -1594,6 +1663,7 @@ function FolderCard({
   folder: Folder;
   count: number;
   over: boolean;
+  moving: boolean;
   landed: boolean;
   selected: boolean;
   color: string | null;
@@ -1610,7 +1680,14 @@ function FolderCard({
   return (
     <button
       ref={ref}
-      {...cardLook(selected, color, "card-button--folder", over && "card-button--over", landed && "card-button--landed")}
+      {...cardLook(
+        selected,
+        color,
+        "card-button--folder",
+        over && "card-button--over",
+        landed && "card-button--landed",
+        moving && "card-button--moving",
+      )}
       data-flip={folder.id}
       data-drop="folder"
       data-space={space}
@@ -1618,6 +1695,7 @@ function FolderCard({
       data-select={folder.id}
       data-select-space={space}
       title={folder.name}
+      disabled={moving}
       onClick={(e) => (e.metaKey || e.shiftKey ? onSelect(e) : onOpen())}
       onPointerDown={(e) => {
         if (!(e.target as HTMLElement).closest(".card__more")) onPress(e);
@@ -1739,8 +1817,10 @@ function PeerStack({ peers }: { peers: Peer[] }) {
 // ------------------------------------------------------------------ while dragging
 
 /** The card under the pointer, and a dock of every other place it can go (plus the trash). */
-function DragLayer({ drag, spaces }: { drag: CardDrag<Card[]>; spaces: Space[] }) {
+function DragLayer({ drag, spaces }: { drag: CardDrag<Carried>; spaces: Space[] }) {
   const over = drag.over;
+  const [first, second] = [...drag.item.folders, ...drag.item.canvases];
+  const count = drag.item.folders.length + drag.item.canvases.length;
   const overTrash = over?.kind === "trash";
   const elsewhere = over?.kind === "space" && over.space !== drag.from;
   const docked = overTrash || (over?.kind === "space" && over.dock);
@@ -1757,11 +1837,12 @@ function DragLayer({ drag, spaces }: { drag: CardDrag<Card[]>; spaces: Space[] }
           transformOrigin: `${drag.grabX}px ${drag.grabY}px`,
         }}
       >
-        {drag.item.length > 1 && <RoughBox seed={seedFrom(drag.item[1].id)} className="card drag-ghost__under" />}
-        <RoughBox seed={seedFrom(drag.item[0].id)} className="card">
-          <span className="card__name">{drag.item[0].name}</span>
+        {second && <RoughBox seed={seedFrom(second.id)} className="card drag-ghost__under" />}
+        <RoughBox seed={seedFrom(first.id)} className="card">
+          {drag.item.folders.length > 0 && <DrawnIcon name="folder" size={30} className="card__folder-icon" />}
+          <span className="card__name">{first.name}</span>
         </RoughBox>
-        {drag.item.length > 1 && <span className="drag-ghost__count">{drag.item.length}</span>}
+        {count > 1 && <span className="drag-ghost__count">{count}</span>}
       </div>
       <div className="dock">
         {spaces
