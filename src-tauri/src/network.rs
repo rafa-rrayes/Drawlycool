@@ -229,7 +229,10 @@ async fn request(
     match resp.status().as_u16() {
         200..=299 => Ok(resp),
         401 => Err(format!("{name} rejected the access token.")),
-        404 => Err("That canvas doesn’t exist anymore.".into()),
+        404 => {
+            let msg = resp.json::<Value>().await.ok().and_then(|v| v["error"].as_str().map(str::to_owned));
+            Err(if msg.as_deref() == Some("Folder not found") { MISSING_FOLDER } else { MISSING_CANVAS }.into())
+        }
         _ => {
             let status = resp.status();
             let msg = resp.json::<Value>().await.ok().and_then(|v| v["error"].as_str().map(str::to_owned));
@@ -237,6 +240,9 @@ async fn request(
         }
     }
 }
+
+const MISSING_CANVAS: &str = "That canvas doesn’t exist anymore.";
+const MISSING_FOLDER: &str = "That folder doesn’t exist anymore.";
 
 async fn json_of(resp: reqwest::Response) -> Result<Value> {
     resp.json().await.map_err(|e| e.to_string())
@@ -580,8 +586,8 @@ pub async fn remote_list(net: Net_<'_>, server_id: String) -> Result<Value> {
 }
 
 #[tauri::command]
-pub async fn remote_create(net: Net_<'_>, server_id: String, name: String) -> Result<Value> {
-    let body = json!({ "name": name });
+pub async fn remote_create(net: Net_<'_>, server_id: String, name: String, folder: Option<String>) -> Result<Value> {
+    let body = json!({ "name": name, "folder": folder });
     json_of(call(&net, &server_id, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await
 }
 
@@ -601,6 +607,40 @@ pub async fn remote_duplicate(net: Net_<'_>, server_id: String, canvas_id: Strin
 pub async fn remote_delete(net: Net_<'_>, server_id: String, canvas_id: String) -> Result<bool> {
     call(&net, &server_id, reqwest::Method::DELETE, &format!("/api/canvases/{canvas_id}"), None).await?;
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn remote_set_folder(net: Net_<'_>, server_id: String, canvas_id: String, folder: Option<String>) -> Result<Value> {
+    let path = format!("/api/canvases/{canvas_id}");
+    json_of(call(&net, &server_id, reqwest::Method::PATCH, &path, Some(json!({ "folder": folder }))).await?).await
+}
+
+/// A server's folders, or null if it's from before folders existed.
+#[tauri::command]
+pub async fn remote_folders(net: Net_<'_>, server_id: String) -> Result<Option<Value>> {
+    match call(&net, &server_id, reqwest::Method::GET, "/api/folders", None).await {
+        Ok(resp) => json_of(resp).await.map(Some),
+        // Older servers don't have the route at all.
+        Err(e) if e == MISSING_CANVAS => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+pub async fn remote_create_folder(net: Net_<'_>, server_id: String, name: String) -> Result<Value> {
+    json_of(call(&net, &server_id, reqwest::Method::POST, "/api/folders", Some(json!({ "name": name }))).await?).await
+}
+
+#[tauri::command]
+pub async fn remote_rename_folder(net: Net_<'_>, server_id: String, folder_id: String, name: String) -> Result<Value> {
+    let path = format!("/api/folders/{folder_id}");
+    json_of(call(&net, &server_id, reqwest::Method::PATCH, &path, Some(json!({ "name": name }))).await?).await
+}
+
+#[tauri::command]
+pub async fn remote_delete_folder(net: Net_<'_>, server_id: String, folder_id: String) -> Result<()> {
+    call(&net, &server_id, reqwest::Method::DELETE, &format!("/api/folders/{folder_id}"), None).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -625,8 +665,9 @@ pub async fn remote_export(
     Ok(true)
 }
 
-/// Moves a canvas between this Mac (`None`) and servers. The original is
-/// removed only once the copy has arrived. Resolves with the copy's metadata.
+/// Moves a canvas between this Mac (`None`) and servers, into `folder` there
+/// if given. The original is removed only once the copy has arrived.
+/// Resolves with the copy's metadata.
 #[tauri::command]
 pub async fn move_canvas(
     net: Net_<'_>,
@@ -635,6 +676,7 @@ pub async fn move_canvas(
     name: String,
     from: Option<String>,
     to: Option<String>,
+    folder: Option<String>,
 ) -> Result<Value> {
     if from == to {
         return Err("It’s already there.".into());
@@ -647,9 +689,10 @@ pub async fn move_canvas(
         }
     };
     let copy = match &to {
-        None => serde_json::to_value(crate::lock(&store).create(&name, Some(&scene))?).map_err(|e| e.to_string())?,
+        None => serde_json::to_value(crate::lock(&store).create(&name, Some(&scene), folder.as_deref())?)
+            .map_err(|e| e.to_string())?,
         Some(server) => {
-            let body = json!({ "name": name, "scene": scene });
+            let body = json!({ "name": name, "scene": scene, "folder": folder });
             json_of(call(&net, server, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await?
         }
     };

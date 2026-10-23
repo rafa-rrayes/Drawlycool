@@ -3,7 +3,7 @@
 
 use crate::network::{HostConfig, Net};
 use crate::tunnel::{self, Phase, Tunnel};
-use drawlycool_server::storage::{CanvasMeta, Storage};
+use drawlycool_server::storage::{CanvasMeta, Folder, Storage};
 use drawlycool_server::{new_token, Config, Server};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -259,15 +259,22 @@ pub fn host_status(net: State<Net>, host: State<HostState>) -> HostStatus {
     status(&net, &host)
 }
 
-/// The canvases in `<data>/hosted/` while hosting is off, so they show up as
-/// paused instead of disappearing. Empty while hosting (the server lists them).
+#[derive(Serialize, Default)]
+pub struct PausedSpace {
+    canvases: Vec<CanvasMeta>,
+    folders: Vec<Folder>,
+}
+
+/// The canvases (and folders) in `<data>/hosted/` while hosting is off, so they
+/// show up as paused instead of disappearing. Empty while hosting (the server
+/// lists them).
 #[tauri::command]
-pub fn paused_canvases(net: State<Net>) -> Vec<CanvasMeta> {
+pub fn paused_canvases(net: State<Net>) -> PausedSpace {
     let base = net.data_dir.join("hosted");
     if is_running() || !base.join("canvases").is_dir() {
-        return Vec::new();
+        return PausedSpace::default();
     }
-    Storage::open(base).map(|s| s.list()).unwrap_or_default()
+    Storage::open(base).map(|s| PausedSpace { canvases: s.list(), folders: s.folders() }).unwrap_or_default()
 }
 
 #[derive(Deserialize)]

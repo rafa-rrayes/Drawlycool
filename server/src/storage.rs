@@ -3,7 +3,8 @@
 //!
 //! Layout (inside `~/Library/Application Support/Drawlycool/` for the app, or
 //! the server's data folder):
-//!   canvases/index.json        -> [{ id, name, createdAt, updatedAt, viewport? }]
+//!   canvases/index.json        -> [{ id, name, createdAt, updatedAt, viewport?, folder? }]
+//!   canvases/folders.json      -> [{ id, name, createdAt }]
 //!   canvases/<id>.excalidraw   -> standard Excalidraw JSON scene
 //!   settings.json              -> { theme }
 //!
@@ -44,6 +45,9 @@ struct Entry {
     updated_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     viewport: Option<Viewport>,
+    /// The folder it's filed in; none for the top level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 
 /// What the frontend sees for each canvas.
@@ -54,12 +58,29 @@ pub struct CanvasMeta {
     pub name: String,
     pub created_at: f64,
     pub updated_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 impl From<&Entry> for CanvasMeta {
     fn from(e: &Entry) -> Self {
-        Self { id: e.id.clone(), name: e.name.clone(), created_at: e.created_at, updated_at: e.updated_at }
+        Self {
+            id: e.id.clone(),
+            name: e.name.clone(),
+            created_at: e.created_at,
+            updated_at: e.updated_at,
+            folder: e.folder.clone(),
+        }
     }
+}
+
+/// A named group of canvases within one place (one level, no nesting).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+    pub created_at: f64,
 }
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -109,8 +130,10 @@ pub fn is_excalidraw_scene(text: &str) -> bool {
 pub struct Storage {
     dir: PathBuf,
     index_path: PathBuf,
+    folders_path: PathBuf,
     settings_path: PathBuf,
     index: Vec<Entry>,
+    folders: Vec<Folder>,
 }
 
 impl Storage {
@@ -119,10 +142,13 @@ impl Storage {
         fs::create_dir_all(&dir)?;
         let mut storage = Self {
             index_path: dir.join("index.json"),
+            folders_path: dir.join("folders.json"),
             settings_path: base_dir.join("settings.json"),
             dir,
             index: Vec::new(),
+            folders: Vec::new(),
         };
+        storage.folders = storage.read_folders();
         storage.index = storage.read_index()?;
         Ok(storage)
     }
@@ -153,9 +179,25 @@ impl Storage {
                 created_at: file_time_ms(meta.created()),
                 updated_at: file_time_ms(meta.modified()),
                 viewport: None,
+                folder: None,
             });
         }
+        // A canvas filed in a folder that's gone is back at the top level.
+        for e in &mut entries {
+            if e.folder.as_ref().is_some_and(|f| !self.folders.iter().any(|x| &x.id == f)) {
+                e.folder = None;
+            }
+        }
         Ok(entries)
+    }
+
+    fn read_folders(&self) -> Vec<Folder> {
+        let mut folders: Vec<Folder> = fs::read_to_string(&self.folders_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        folders.retain(|f| is_valid_id(&f.id));
+        folders
     }
 
     fn scene_path_unchecked(&self, id: &str) -> PathBuf {
@@ -173,6 +215,22 @@ impl Storage {
     fn persist_index(&self) -> Result<()> {
         let json = serde_json::to_vec_pretty(&self.index).map_err(err)?;
         atomic_write(&self.index_path, &json).map_err(err)
+    }
+
+    fn persist_folders(&self) -> Result<()> {
+        let json = serde_json::to_vec_pretty(&self.folders).map_err(err)?;
+        atomic_write(&self.folders_path, &json).map_err(err)
+    }
+
+    fn find_folder_mut(&mut self, id: &str) -> Result<&mut Folder> {
+        self.folders.iter_mut().find(|f| f.id == id).ok_or_else(|| format!("Folder not found: {id}"))
+    }
+
+    fn check_folder(&self, folder: Option<&str>) -> Result<()> {
+        match folder {
+            Some(id) if !self.folders.iter().any(|f| f.id == id) => Err(format!("Folder not found: {id}")),
+            _ => Ok(()),
+        }
     }
 
     // ---------------------------------------------------------- public API
@@ -196,7 +254,9 @@ impl Storage {
         Ok((e.into(), e.viewport))
     }
 
-    pub fn create(&mut self, name: &str, scene: Option<&str>) -> Result<CanvasMeta> {
+    /// A new canvas, filed in `folder` if given (at the top level otherwise).
+    pub fn create(&mut self, name: &str, scene: Option<&str>, folder: Option<&str>) -> Result<CanvasMeta> {
+        self.check_folder(folder)?;
         let now = now_ms();
         let entry = Entry {
             id: uuid::Uuid::new_v4().to_string(),
@@ -204,6 +264,7 @@ impl Storage {
             created_at: now,
             updated_at: now,
             viewport: None,
+            folder: folder.map(str::to_owned),
         };
         atomic_write(&self.scene_path_unchecked(&entry.id), scene.unwrap_or(EMPTY_SCENE).as_bytes())
             .map_err(err)?;
@@ -245,9 +306,11 @@ impl Storage {
     }
 
     pub fn duplicate(&mut self, id: &str) -> Result<CanvasMeta> {
-        let name = format!("{} copy", self.find(id)?.name);
+        let original = self.find(id)?;
+        let name = format!("{} copy", original.name);
+        let folder = original.folder.clone();
         let scene = fs::read_to_string(self.scene_path(id)?).map_err(err)?;
-        self.create(&name, Some(&scene))
+        self.create(&name, Some(&scene), folder.as_deref())
     }
 
     pub fn remove(&mut self, id: &str) -> Result<()> {
@@ -259,6 +322,54 @@ impl Storage {
         }
         self.index.retain(|e| e.id != id);
         self.persist_index()
+    }
+
+    /// Files a canvas in a folder, or takes it out (`None`).
+    pub fn set_folder(&mut self, id: &str, folder: Option<&str>) -> Result<CanvasMeta> {
+        self.check_folder(folder)?;
+        let entry = self.find_mut(id)?;
+        entry.folder = folder.map(str::to_owned);
+        let meta = CanvasMeta::from(&*entry);
+        self.persist_index()?;
+        Ok(meta)
+    }
+
+    // ---------------------------------------------------------- folders
+
+    pub fn folders(&self) -> Vec<Folder> {
+        self.folders.clone()
+    }
+
+    pub fn create_folder(&mut self, name: &str) -> Result<Folder> {
+        let folder = Folder { id: uuid::Uuid::new_v4().to_string(), name: clean_name(name, "Untitled folder"), created_at: now_ms() };
+        self.folders.push(folder.clone());
+        self.persist_folders()?;
+        Ok(folder)
+    }
+
+    pub fn rename_folder(&mut self, id: &str, name: &str) -> Result<Folder> {
+        let folder = self.find_folder_mut(id)?;
+        folder.name = clean_name(name, &folder.name.clone());
+        let folder = folder.clone();
+        self.persist_folders()?;
+        Ok(folder)
+    }
+
+    /// Deletes a folder; the canvases in it move to the top level.
+    pub fn delete_folder(&mut self, id: &str) -> Result<()> {
+        self.find_folder_mut(id)?;
+        let mut moved = false;
+        for e in self.index.iter_mut().filter(|e| e.folder.as_deref() == Some(id)) {
+            e.folder = None;
+            moved = true;
+        }
+        // Canvases first: if the second write fails, the folder is still there
+        // (and empty) rather than its canvases pointing nowhere.
+        if moved {
+            self.persist_index()?;
+        }
+        self.folders.retain(|f| f.id != id);
+        self.persist_folders()
     }
 
     pub fn read_settings(&self) -> Map<String, Value> {
@@ -274,5 +385,48 @@ impl Storage {
         let json = serde_json::to_vec_pretty(&settings).map_err(err)?;
         atomic_write(&self.settings_path, &json).map_err(err)?;
         Ok(settings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("drawlycool-storage-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn indexes_from_before_folders_still_load() {
+        let base = temp("old-index");
+        let dir = base.join("canvases");
+        fs::create_dir_all(&dir).unwrap();
+        let id = "0692fbd7-4930-4c1e-b6bf-e212aa52e820";
+        fs::write(dir.join(format!("{id}.excalidraw")), EMPTY_SCENE).unwrap();
+        let old = format!(r#"[{{"id":"{id}","name":"MySite","createdAt":1,"updatedAt":2}}]"#);
+        fs::write(dir.join("index.json"), old).unwrap();
+
+        let storage = Storage::open(base.clone()).unwrap();
+        let list = storage.list();
+        assert_eq!((list.len(), list[0].name.as_str(), list[0].folder.as_deref()), (1, "MySite", None));
+        assert!(storage.folders().is_empty());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn canvases_in_a_missing_folder_return_to_the_top_level() {
+        let base = temp("dangling");
+        let mut storage = Storage::open(base.clone()).unwrap();
+        let folder = storage.create_folder("Work").unwrap();
+        let meta = storage.create("Plan", None, Some(&folder.id)).unwrap();
+        assert_eq!(meta.folder.as_deref(), Some(folder.id.as_str()));
+        // The folder list is lost (e.g. edited by hand, or written by an older version).
+        fs::remove_file(base.join("canvases/folders.json")).unwrap();
+
+        let storage = Storage::open(base.clone()).unwrap();
+        assert_eq!(storage.list()[0].folder, None);
+        let _ = fs::remove_dir_all(base);
     }
 }

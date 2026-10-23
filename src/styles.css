@@ -230,6 +230,54 @@ body,
   position: relative;
 }
 
+/* ------------------------------------------------------------------ folders */
+
+.card__folder-icon {
+  position: relative;
+  color: var(--muted);
+}
+
+.card-button--folder:hover .card__folder-icon,
+.card-button--over .card__folder-icon,
+.card--editing .card__folder-icon {
+  color: var(--accent);
+}
+
+/* A canvas carried over a folder: the folder opens up to take it. */
+.card-button--over .card {
+  color: var(--accent);
+  transform: scale(1.04);
+}
+
+.card-button--over .card::before {
+  background: var(--card-hover);
+}
+
+.space__crumb {
+  all: unset;
+  cursor: pointer;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border-radius: 10px;
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+
+.space__crumb:hover,
+.space__crumb--over {
+  color: var(--accent);
+  background: var(--card-hover);
+}
+
+.space__crumb:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.space__crumb-sep {
+  margin: 0 10px;
+  color: var(--muted);
+}
+
 .card--editing {
   color: var(--accent);
 }

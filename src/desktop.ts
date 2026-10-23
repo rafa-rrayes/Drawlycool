@@ -7,7 +7,12 @@ export type CanvasMeta = {
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** The folder it's filed in; absent at the top level. */
+  folder?: string;
 };
+
+/** A named group of canvases in one space (one level, no nesting). */
+export type Folder = { id: string; name: string; createdAt: number };
 
 export type Viewport = { scrollX: number; scrollY: number; zoom: number };
 
@@ -19,7 +24,7 @@ export type Profile = { name: string; id: string };
 export type Settings = {
   theme?: ThemePreference;
   profile?: Profile;
-  /** Card order on the Welcome screen, per space ("local" or a server id). */
+  /** Card order on the Welcome screen, per space ("local" or a server id), and per folder ("<space>/<folder>"). */
   canvasOrder?: Record<string, string[]>;
 };
 
@@ -140,7 +145,7 @@ const decoder = new TextDecoder();
 
 export const desktop = {
   list: () => invoke<CanvasMeta[]>("list_canvases"),
-  create: (name: string) => invoke<CanvasMeta>("create_canvas", { name }),
+  create: (name: string, folder?: string) => invoke<CanvasMeta>("create_canvas", { name, folder: folder ?? null }),
 
   async load(id: string): Promise<{ meta: CanvasMeta; scene: string; viewport: Viewport | null }> {
     const [{ meta, viewport }, bytes] = await Promise.all([
@@ -156,6 +161,16 @@ export const desktop = {
   rename: (id: string, name: string) => invoke<CanvasMeta>("rename_canvas", { id, name }),
   duplicate: (id: string) => invoke<CanvasMeta>("duplicate_canvas", { id }),
   remove: (id: string) => invoke<boolean>("delete_canvas", { id }),
+  /** Files a canvas in a folder, or takes it out (null). */
+  setFolder: (id: string, folder: string | null) => invoke<CanvasMeta>("set_canvas_folder", { id, folder }),
+
+  folders: {
+    list: () => invoke<Folder[]>("list_folders"),
+    create: (name: string) => invoke<Folder>("create_folder", { name }),
+    rename: (id: string, name: string) => invoke<Folder>("rename_folder", { id, name }),
+    /** Its canvases move to the top level. */
+    remove: (id: string) => invoke<void>("delete_folder", { id }),
+  },
   reveal: (id: string) => invoke<void>("reveal_canvas", { id }),
   exportCanvas: (id: string) => invoke<boolean>("export_canvas", { id }),
   importDialog: () => invoke<ImportResult>("import_dialog"),
@@ -170,11 +185,11 @@ export const desktop = {
   userFullName: () => invoke<string>("user_full_name"),
 
   /**
-   * Moves a canvas between this Mac (`null`) and servers; the original goes
-   * once the copy has arrived. Resolves with the copy.
+   * Moves a canvas between this Mac (`null`) and servers, into `folder` there
+   * if given; the original goes once the copy has arrived. Resolves with the copy.
    */
-  move: (canvasId: string, name: string, from: string | null, to: string | null) =>
-    invoke<CanvasMeta>("move_canvas", { canvasId, name, from, to }),
+  move: (canvasId: string, name: string, from: string | null, to: string | null, folder?: string) =>
+    invoke<CanvasMeta>("move_canvas", { canvasId, name, from, to, folder: folder ?? null }),
 
   servers: {
     list: () => invoke<ServerInfo[]>("list_servers"),
@@ -198,12 +213,23 @@ export const desktop = {
 
   remote: {
     list: (serverId: string) => invoke<RemoteCanvas[]>("remote_list", { serverId }),
-    create: (serverId: string, name: string) => invoke<RemoteCanvas>("remote_create", { serverId, name }),
+    create: (serverId: string, name: string, folder?: string) =>
+      invoke<RemoteCanvas>("remote_create", { serverId, name, folder: folder ?? null }),
     rename: (serverId: string, canvasId: string, name: string) =>
       invoke<RemoteCanvas>("remote_rename", { serverId, canvasId, name }),
     duplicate: (serverId: string, canvasId: string) =>
       invoke<RemoteCanvas>("remote_duplicate", { serverId, canvasId }),
     remove: (serverId: string, canvasId: string) => invoke<boolean>("remote_delete", { serverId, canvasId }),
+    setFolder: (serverId: string, canvasId: string, folder: string | null) =>
+      invoke<RemoteCanvas>("remote_set_folder", { serverId, canvasId, folder }),
+    folders: {
+      /** Null for servers from before folders existed. */
+      list: (serverId: string) => invoke<Folder[] | null>("remote_folders", { serverId }),
+      create: (serverId: string, name: string) => invoke<Folder>("remote_create_folder", { serverId, name }),
+      rename: (serverId: string, folderId: string, name: string) =>
+        invoke<Folder>("remote_rename_folder", { serverId, folderId, name }),
+      remove: (serverId: string, folderId: string) => invoke<void>("remote_delete_folder", { serverId, folderId }),
+    },
     exportCanvas: (serverId: string, canvasId: string, name: string) =>
       invoke<boolean>("remote_export", { serverId, canvasId, name }),
 
@@ -228,8 +254,8 @@ export const desktop = {
   host: {
     status: () => invoke<HostStatus>("host_status"),
     update: (patch: HostPatch) => invoke<HostStatus>("host_update", { patch }),
-    /** Canvases shared from this Mac, while sharing is off. */
-    paused: () => invoke<CanvasMeta[]>("paused_canvases"),
+    /** Canvases (and folders) shared from this Mac, while sharing is off. */
+    paused: () => invoke<{ canvases: CanvasMeta[]; folders: Folder[] }>("paused_canvases"),
   },
 
   onMenu(callback: (message: { action: MenuAction }) => void) {

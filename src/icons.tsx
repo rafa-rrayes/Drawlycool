@@ -33,6 +33,8 @@ const ICONS = {
   retry: "M20 11a8.1 8.1 0 0 0-15.5-2 M4 5v4h4 M4 13a8.1 8.1 0 0 0 15.5 2 M20 19v-4h-4",
   close: "M18 6L6 18 M6 6l12 12",
   more: "M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0 M11 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0 M18 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0",
+  folder: "M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2",
+  folderPlus: "M12 19H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l3 3h7a2 2 0 0 1 2 2v3.5 M16 19h6 M19 16v6",
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -25,11 +25,13 @@ Or download `Drawlycool.dmg` from the [latest release](https://github.com/rafa-r
 | Rename | Click the canvas name (top-right), or right-click a card → *Rename…* |
 | Duplicate / Export / Show in Finder / Delete | Right-click a card (or its `•••` button). Or drag a card to the trash that appears at the bottom |
 | Arrange | Drag cards around. The order is remembered |
+| Folders | Folder icon next to a space's name → name it. Drag canvases onto a folder card to file them (or right-click → *Move to*). Click a folder to look inside; click the space's name above it to go back, or drop a canvas there to take it out. Deleting a folder keeps its canvases |
 | Import `.excalidraw` files | File → Import…, or drag the files onto the Welcome screen |
 | Save | Automatic. ⌘S forces an immediate save |
 
 Local data lives in `~/Library/Application Support/Drawlycool/canvases/`. On first launch, data from the app's earlier name (`…/Excalidraw/`) is moved there. Canvases in *With friends* (shared from this Mac) are in `hosted/canvases/` in the same folder. Both use this layout:
-- `index.json` holds canvas names and dates.
+- `index.json` holds canvas names and dates, and the folder each one is in.
+- `folders.json` holds the folders.
 - Each `<id>.excalidraw` file is a standard Excalidraw scene, so it opens in excalidraw.com and other Excalidraw tools as well.
 
 ## Collaboration

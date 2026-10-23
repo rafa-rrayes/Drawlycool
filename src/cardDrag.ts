@@ -3,8 +3,15 @@
 // drop, which stays free for importing files dropped from Finder.
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 
-/** Where a card would land. `index` is its position among the space's cards (null: at the front). */
-export type DropTarget = { kind: "space"; space: string; index: number | null; dock?: boolean } | { kind: "trash" };
+/**
+ * Where a card would land. `index` is its position among the cards shown in
+ * the space (null: at the front). A folder target files it in that folder
+ * (null: out of any folder).
+ */
+export type DropTarget =
+  | { kind: "space"; space: string; index: number | null; dock?: boolean }
+  | { kind: "folder"; space: string; folder: string | null }
+  | { kind: "trash" };
 
 export type CardDrag<T> = {
   item: T;
@@ -27,8 +34,10 @@ const MAX_SCROLL = 18;
 
 /**
  * Drop targets are marked in the DOM: `data-drop="space"` with `data-space`
- * (and an optional `data-grid` of equally sized cells inside, the first being
- * the "New canvas" card), or `data-drop="trash"`. Dock targets also have `data-dock`.
+ * (and an optional `data-grid` of equally sized cells inside, whose first
+ * `data-lead` cells, "New canvas" and folders, aren't canvases),
+ * `data-drop="folder"` with `data-space` and `data-folder` (empty: out of any
+ * folder), or `data-drop="trash"`. Dock targets also have `data-dock`.
  */
 function hitTest(x: number, y: number): DropTarget | null {
   for (const el of document.elementsFromPoint(x, y)) {
@@ -36,6 +45,7 @@ function hitTest(x: number, y: number): DropTarget | null {
     if (!target) continue;
     if (target.dataset.drop === "trash") return { kind: "trash" };
     const space = target.dataset.space!;
+    if (target.dataset.drop === "folder") return { kind: "folder", space, folder: target.dataset.folder || null };
     if (target.dataset.dock !== undefined) return { kind: "space", space, index: null, dock: true };
     const grid = target.querySelector<HTMLElement>("[data-grid]");
     const rect = grid?.getBoundingClientRect();
@@ -57,8 +67,7 @@ function cellAt(grid: HTMLElement, x: number, y: number) {
   const rect = grid.getBoundingClientRect();
   const col = Math.min(cols - 1, Math.max(0, Math.floor((x - rect.left + colGap / 2) / (first.width + colGap))));
   const row = Math.max(0, Math.floor((y - rect.top + rowGap / 2) / (first.height + rowGap)));
-  // Cell 0 is the "New canvas" card.
-  return Math.max(0, row * cols + col - 1);
+  return Math.max(0, row * cols + col - Number(grid.dataset.lead ?? 1));
 }
 
 export function useCardDrag<T>(scroller: RefObject<HTMLElement | null>, onDrop: (item: T, from: string, target: DropTarget) => void) {

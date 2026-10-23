@@ -372,7 +372,7 @@ fn find_canvas(hub: &Hub, query: &str) -> Result<String, String> {
 async fn open_canvas(hub: &Arc<Hub>, session: &Arc<Session>, args: &Value) -> ToolResult {
     let a = Args::of(args);
     let id = if let Some(name) = a.str("create").or_else(|| a.str("new")).or_else(|| a.str("name")) {
-        hub.storage().create(name, None)?.id
+        hub.storage().create(name, None, None)?.id
     } else if let Some(q) = a.str("canvas").or_else(|| a.str("id")) {
         find_canvas(hub, q)?
     } else if let Some(c) = session.start_canvas.clone().filter(|c| hub.storage().exists(c)) {

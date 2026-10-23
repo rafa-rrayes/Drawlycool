@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-use storage::{CanvasMeta, Storage, Viewport};
+use storage::{CanvasMeta, Folder, Storage, Viewport};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::NewWindowResponse;
@@ -109,8 +109,8 @@ fn list_canvases(store: Store) -> Vec<CanvasMeta> {
 }
 
 #[tauri::command]
-fn create_canvas(store: Store, name: String) -> Result<CanvasMeta> {
-    lock(&store).create(&name, None)
+fn create_canvas(store: Store, name: String, folder: Option<String>) -> Result<CanvasMeta> {
+    lock(&store).create(&name, None, folder.as_deref())
 }
 
 #[derive(Serialize)]
@@ -157,6 +157,31 @@ fn duplicate_canvas(store: Store, id: String) -> Result<CanvasMeta> {
 fn delete_canvas(store: Store, id: String) -> Result<bool> {
     lock(&store).remove(&id)?;
     Ok(true)
+}
+
+#[tauri::command]
+fn set_canvas_folder(store: Store, id: String, folder: Option<String>) -> Result<CanvasMeta> {
+    lock(&store).set_folder(&id, folder.as_deref())
+}
+
+#[tauri::command]
+fn list_folders(store: Store) -> Vec<Folder> {
+    lock(&store).folders()
+}
+
+#[tauri::command]
+fn create_folder(store: Store, name: String) -> Result<Folder> {
+    lock(&store).create_folder(&name)
+}
+
+#[tauri::command]
+fn rename_folder(store: Store, id: String, name: String) -> Result<Folder> {
+    lock(&store).rename_folder(&id, &name)
+}
+
+#[tauri::command]
+fn delete_folder(store: Store, id: String) -> Result<()> {
+    lock(&store).delete_folder(&id)
 }
 
 #[tauri::command]
@@ -208,7 +233,7 @@ fn import_many(store: &Store, files: Vec<ImportFile>) -> ImportResult {
             result.errors.push(format!("“{name}” is not a valid Excalidraw file."));
             continue;
         }
-        match lock(store).create(&name, Some(&file.text)) {
+        match lock(store).create(&name, Some(&file.text), None) {
             Ok(meta) => result.imported.push(meta),
             Err(e) => result.errors.push(e),
         }
@@ -498,6 +523,11 @@ pub fn run() {
             rename_canvas,
             duplicate_canvas,
             delete_canvas,
+            set_canvas_folder,
+            list_folders,
+            create_folder,
+            rename_folder,
+            delete_folder,
             reveal_canvas,
             export_canvas,
             import_dialog,
@@ -521,6 +551,11 @@ pub fn run() {
             network::remote_rename,
             network::remote_duplicate,
             network::remote_delete,
+            network::remote_set_folder,
+            network::remote_folders,
+            network::remote_create_folder,
+            network::remote_rename_folder,
+            network::remote_delete_folder,
             network::remote_export,
             network::move_canvas,
             network::copy_text,

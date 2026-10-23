@@ -6,13 +6,17 @@
 //!
 //! HTTP API (every `/api` route needs `Authorization: Bearer <token>`):
 //!   GET    /api/info                     -> { name, version, protocol }
-//!   GET    /api/canvases                 -> [{ id, name, createdAt, updatedAt, peers }]
-//!   POST   /api/canvases                 { name, scene? } -> meta
-//!   PATCH  /api/canvases/{id}            { name } -> meta
+//!   GET    /api/canvases                 -> [{ id, name, createdAt, updatedAt, folder?, peers }]
+//!   POST   /api/canvases                 { name, scene?, folder? } -> meta
+//!   PATCH  /api/canvases/{id}            { name?, folder? } -> meta (folder null: top level)
 //!   POST   /api/canvases/{id}/duplicate  -> meta
 //!   DELETE /api/canvases/{id}
 //!   GET    /api/canvases/{id}/scene      -> .excalidraw JSON
 //!   GET    /api/canvases/{id}/ws         -> live session (see `ClientMsg`)
+//!   GET    /api/folders                  -> [{ id, name, createdAt }]
+//!   POST   /api/folders                  { name } -> folder
+//!   PATCH  /api/folders/{id}             { name } -> folder
+//!   DELETE /api/folders/{id}             (its canvases move to the top level)
 //!   POST   /mcp                          -> MCP endpoint for AI assistants (see `mcp`)
 //!
 //! Live sessions exchange JSON text frames. The client opens with `hello`, the
@@ -44,7 +48,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use storage::{CanvasMeta, Storage};
+use storage::{CanvasMeta, Folder, Storage};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -532,6 +536,8 @@ impl IntoResponse for ApiError {
 fn storage_err(e: String) -> ApiError {
     if e.starts_with("Canvas not found") || e.starts_with("Invalid canvas id") {
         ApiError::not_found()
+    } else if e.starts_with("Folder not found") {
+        ApiError(StatusCode::NOT_FOUND, "Folder not found".into())
     } else {
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, e)
     }
@@ -589,6 +595,7 @@ struct CreateBody {
     name: String,
     /// An existing `.excalidraw` scene to start from (e.g. a local canvas).
     scene: Option<String>,
+    folder: Option<String>,
 }
 
 async fn create(State(hub): State<Arc<Hub>>, Json(body): Json<CreateBody>) -> Result<Json<Value>, ApiError> {
@@ -597,21 +604,39 @@ async fn create(State(hub): State<Arc<Hub>>, Json(body): Json<CreateBody>) -> Re
             return Err(ApiError::bad_request("Not a valid Excalidraw scene"));
         }
     }
-    let meta = hub.storage().create(&body.name, body.scene.as_deref()).map_err(storage_err)?;
+    let meta = hub.storage().create(&body.name, body.scene.as_deref(), body.folder.as_deref()).map_err(storage_err)?;
     Ok(Json(meta_json(&meta, vec![])))
 }
 
-#[derive(Deserialize)]
-struct RenameBody {
-    name: String,
+/// Tells a field sent as `null` (`Some(None)`) apart from one left out (`None`).
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }
 
-async fn rename(
+#[derive(Deserialize)]
+struct UpdateBody {
+    name: Option<String>,
+    /// A folder id, or null for the top level.
+    #[serde(default, deserialize_with = "present")]
+    folder: Option<Option<String>>,
+}
+
+async fn update(
     State(hub): State<Arc<Hub>>,
     Path(id): Path<String>,
-    Json(body): Json<RenameBody>,
+    Json(body): Json<UpdateBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let meta = hub.storage().rename(&id, &body.name).map_err(storage_err)?;
+    let meta = {
+        let mut storage = hub.storage();
+        let mut meta = storage.meta(&id).map_err(storage_err)?.0;
+        if let Some(folder) = &body.folder {
+            meta = storage.set_folder(&id, folder.as_deref()).map_err(storage_err)?;
+        }
+        if let Some(name) = &body.name {
+            meta = storage.rename(&id, name).map_err(storage_err)?;
+        }
+        meta
+    };
     if let Some(room) = hub.loaded_room(&id) {
         lock(&room.state).broadcast(None, text(json!({ "type": "meta", "meta": meta })));
     }
@@ -641,6 +666,32 @@ async fn remove(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Result<S
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn folders(State(hub): State<Arc<Hub>>) -> Json<Vec<Folder>> {
+    Json(hub.storage().folders())
+}
+
+#[derive(Deserialize)]
+struct FolderBody {
+    name: String,
+}
+
+async fn create_folder(State(hub): State<Arc<Hub>>, Json(body): Json<FolderBody>) -> Result<Json<Folder>, ApiError> {
+    Ok(Json(hub.storage().create_folder(&body.name).map_err(storage_err)?))
+}
+
+async fn rename_folder(
+    State(hub): State<Arc<Hub>>,
+    Path(id): Path<String>,
+    Json(body): Json<FolderBody>,
+) -> Result<Json<Folder>, ApiError> {
+    Ok(Json(hub.storage().rename_folder(&id, &body.name).map_err(storage_err)?))
+}
+
+async fn delete_folder(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
+    hub.storage().delete_folder(&id).map_err(storage_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn scene(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Result<Response, ApiError> {
     let bytes = match hub.loaded_room(&id) {
         Some(room) => lock(&room.state).scene.to_json(),
@@ -653,10 +704,12 @@ fn router(hub: Arc<Hub>) -> Router {
     let api = Router::new()
         .route("/info", get(info))
         .route("/canvases", get(list).post(create))
-        .route("/canvases/{id}", axum::routing::patch(rename).delete(remove))
+        .route("/canvases/{id}", axum::routing::patch(update).delete(remove))
         .route("/canvases/{id}/duplicate", post(duplicate))
         .route("/canvases/{id}/scene", get(scene))
         .route("/canvases/{id}/ws", get(ws_route))
+        .route("/folders", get(folders).post(create_folder))
+        .route("/folders/{id}", axum::routing::patch(rename_folder).delete(delete_folder))
         .layer(middleware::from_fn_with_state(hub.clone(), auth));
     let mcp = post(mcp::post).get(mcp::get).delete(mcp::delete).route_layer(middleware::from_fn_with_state(hub.clone(), auth));
     Router::new()

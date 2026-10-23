@@ -204,3 +204,55 @@ async fn edits_survive_a_restart_and_uploads_keep_their_scene() {
     assert_eq!(status, 400);
     server.stop().await;
 }
+
+#[tokio::test]
+async fn folders_group_canvases_and_let_them_go() {
+    use reqwest::Method;
+    let dir = temp_dir("folders");
+    let server = start(&dir).await;
+    let api = Api::new(&server);
+
+    let (status, folder) = api.req(Method::POST, "/api/folders", Some(json!({ "name": "  Sonnets " }))).await;
+    assert_eq!(status, 200);
+    assert_eq!(folder["name"], "Sonnets");
+    let fid = folder["id"].as_str().unwrap().to_owned();
+
+    // Created straight into the folder, or filed later.
+    let (_, inside) = api.req(Method::POST, "/api/canvases", Some(json!({ "name": "One", "folder": fid }))).await;
+    assert_eq!(inside["folder"], fid.as_str());
+    let (_, loose) = api.req(Method::POST, "/api/canvases", Some(json!({ "name": "Two" }))).await;
+    assert!(loose.get("folder").is_none(), "top level has no folder field");
+    let two = loose["id"].as_str().unwrap().to_owned();
+    let (_, filed) = api.req(Method::PATCH, &format!("/api/canvases/{two}"), Some(json!({ "folder": fid }))).await;
+    assert_eq!((filed["name"].as_str(), filed["folder"].as_str()), (Some("Two"), Some(fid.as_str())));
+
+    // A rename alone leaves the folder alone; null takes it out.
+    let (_, renamed) = api.req(Method::PATCH, &format!("/api/canvases/{two}"), Some(json!({ "name": "Deux" }))).await;
+    assert_eq!((renamed["name"].as_str(), renamed["folder"].as_str()), (Some("Deux"), Some(fid.as_str())));
+    let (_, out) = api.req(Method::PATCH, &format!("/api/canvases/{two}"), Some(json!({ "folder": null }))).await;
+    assert!(out.get("folder").is_none());
+
+    // Copies stay next to the original.
+    let one = inside["id"].as_str().unwrap();
+    let (_, copy) = api.req(Method::POST, &format!("/api/canvases/{one}/duplicate"), None).await;
+    assert_eq!(copy["folder"], fid.as_str());
+
+    let (status, _) = api.req(Method::PATCH, &format!("/api/canvases/{two}"), Some(json!({ "folder": "00000000-0000-0000-0000-000000000000" }))).await;
+    assert_eq!(status, 404, "unknown folder");
+
+    let (_, renamed) = api.req(Method::PATCH, &format!("/api/folders/{fid}"), Some(json!({ "name": "Poems" }))).await;
+    assert_eq!(renamed["name"], "Poems");
+    let (_, list) = api.req(Method::GET, "/api/folders", None).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // Deleting a folder keeps its canvases, at the top level.
+    let (status, _) = api.req(Method::DELETE, &format!("/api/folders/{fid}"), None).await;
+    assert_eq!(status, 204);
+    let (_, canvases) = api.req(Method::GET, "/api/canvases", None).await;
+    let canvases = canvases.as_array().unwrap();
+    assert_eq!(canvases.len(), 3);
+    assert!(canvases.iter().all(|c| c.get("folder").is_none()));
+    let (_, list) = api.req(Method::GET, "/api/folders", None).await;
+    assert_eq!(list, json!([]));
+    server.stop().await;
+}
