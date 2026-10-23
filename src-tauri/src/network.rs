@@ -681,21 +681,7 @@ pub async fn move_canvas(
     if from == to {
         return Err("It’s already there.".into());
     }
-    let scene = match &from {
-        None => String::from_utf8(crate::lock(&store).load_scene(&canvas_id)?).map_err(|e| e.to_string())?,
-        Some(server) => {
-            let path = format!("/api/canvases/{canvas_id}/scene");
-            call(&net, server, reqwest::Method::GET, &path, None).await?.text().await.map_err(|e| e.to_string())?
-        }
-    };
-    let copy = match &to {
-        None => serde_json::to_value(crate::lock(&store).create(&name, Some(&scene), folder.as_deref())?)
-            .map_err(|e| e.to_string())?,
-        Some(server) => {
-            let body = json!({ "name": name, "scene": scene, "folder": folder });
-            json_of(call(&net, server, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await?
-        }
-    };
+    let copy = copy_canvas(net.clone(), store.clone(), canvas_id.clone(), name, from.clone(), to, folder).await?;
     match &from {
         None => crate::lock(&store).remove(&canvas_id)?,
         Some(server) => {
@@ -703,6 +689,35 @@ pub async fn move_canvas(
         }
     }
     Ok(copy)
+}
+
+/// Copies a canvas, named `name`, into a space (None: this Mac) and `folder` there.
+/// `from` and `to` may be the same space.
+#[tauri::command]
+pub async fn copy_canvas(
+    net: Net_<'_>,
+    store: crate::Store<'_>,
+    canvas_id: String,
+    name: String,
+    from: Option<String>,
+    to: Option<String>,
+    folder: Option<String>,
+) -> Result<Value> {
+    let scene = match &from {
+        None => String::from_utf8(crate::lock(&store).load_scene(&canvas_id)?).map_err(|e| e.to_string())?,
+        Some(server) => {
+            let path = format!("/api/canvases/{canvas_id}/scene");
+            call(&net, server, reqwest::Method::GET, &path, None).await?.text().await.map_err(|e| e.to_string())?
+        }
+    };
+    match &to {
+        None => serde_json::to_value(crate::lock(&store).create(&name, Some(&scene), folder.as_deref())?)
+            .map_err(|e| e.to_string()),
+        Some(server) => {
+            let body = json!({ "name": name, "scene": scene, "folder": folder });
+            json_of(call(&net, server, reqwest::Method::POST, "/api/canvases", Some(body)).await?).await
+        }
+    }
 }
 
 #[tauri::command]

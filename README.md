@@ -21,6 +21,9 @@ Or download `Drawlycool.dmg` from the [latest release](https://github.com/rafa-r
 | Action | How |
 | --- | --- |
 | New canvas | Click **+ New canvas**, or press ⌘N |
+| Select | Drag across empty space to draw a box around cards. ⌘-click adds or removes one, shift-click adds a run. ⌘A selects all in a space, Esc clears. Right-click the selection for *Copy*, *Color*, *Move to* and *Delete*; drag it to move it all; Delete key deletes it |
+| Copy and paste | ⌘C copies the selection (or right-click a card → *Copy*). ⌘V pastes into the space you're working in, or right-click a space's background → *Paste*. Works between spaces; next to the originals, copies get " copy" added to their names |
+| Color | Right-click a card or folder (or a selection) → *Color*. Colors are yours: they're kept on this Mac, not on shared servers |
 | Back to canvases | Top-right grid button, main menu → *All canvases*, or press ⌘O |
 | Rename | Click the canvas name (top-right), or right-click a card → *Rename…* |
 | Duplicate / Export / Show in Finder / Delete | Right-click a card (or its `•••` button). Or drag a card to the trash that appears at the bottom |
@@ -50,7 +53,7 @@ Shared canvases live on a **server**. Any Mac running the app can act as one, or
 
 In a shared canvas you see everyone's cursors, selections and names. Click someone's avatar to follow their viewport. Edits merge per element, so if two people move the *same* shape at once, one change wins. If the connection drops, the canvas turns read-only with a *Reconnecting…* banner until it comes back. There is no offline editing of shared canvases.
 
-While sharing is off, *With friends* still shows its canvases, dimmed. Clicking one turns sharing back on and opens it.
+While sharing is off, *With friends* still shows its canvases, dimmed. Opening one turns sharing back on and opens it.
 
 **Reachability.** Under *Who can join* in the sharing settings:
 

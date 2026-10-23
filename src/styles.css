@@ -25,6 +25,16 @@
   --ok: #2f9e44;
   --field-bg: #f8f9fa;
   --overlay: rgba(255, 255, 255, 0.72);
+  --selected: rgba(105, 101, 219, 0.14);
+  /* Card colours (Excalidraw's palette). */
+  --card-red: #e03131;
+  --card-orange: #f08c00;
+  --card-yellow: #e8b500;
+  --card-green: #2f9e44;
+  --card-teal: #0c8599;
+  --card-blue: #1971c2;
+  --card-violet: #7048e8;
+  --card-pink: #d6336c;
   --hand: "Excalifont", "Virgil", "Comic Sans MS", cursive;
   --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   color-scheme: light;
@@ -40,6 +50,15 @@
   --ok: #69db7c;
   --field-bg: #1e1e24;
   --overlay: rgba(18, 18, 18, 0.72);
+  --selected: rgba(168, 165, 255, 0.16);
+  --card-red: #ff8787;
+  --card-orange: #ffa94d;
+  --card-yellow: #ffd43b;
+  --card-green: #69db7c;
+  --card-teal: #3bc9db;
+  --card-blue: #74c0fc;
+  --card-violet: #b197fc;
+  --card-pink: #f783ac;
   color-scheme: dark;
 }
 
@@ -228,6 +247,54 @@ body,
 
 .card__plus {
   position: relative;
+}
+
+/* A painted card: outline in its colour, filled with a wash of it. */
+.card-button--colored .card {
+  color: var(--card-color);
+}
+
+.card-button--colored .card::before {
+  background: color-mix(in srgb, var(--card-color) 12%, transparent);
+}
+
+.card-button--colored:hover .card::before {
+  background: color-mix(in srgb, var(--card-color) 18%, transparent);
+}
+
+.card-button--colored .card__name {
+  color: var(--ink);
+}
+
+.card-button--colored .card__folder-icon,
+.card-button--colored:hover .card__folder-icon {
+  color: var(--card-color);
+}
+
+/* Selected: tinted, with a ring around it. */
+.card-button--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.card-button--selected .card::before,
+.card-button--selected:hover .card::before {
+  background: var(--selected);
+}
+
+.card-button--selected.card-button--colored .card::before {
+  background: color-mix(in srgb, var(--card-color) 26%, transparent);
+}
+
+/* The box drawn across the background to select cards. */
+.marquee {
+  position: fixed;
+  z-index: 30;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1.5px dashed var(--accent);
+  border-radius: 6px;
+  background: var(--selected);
 }
 
 /* ------------------------------------------------------------------ folders */
@@ -795,6 +862,28 @@ body,
   border-radius: 24px;
 }
 
+/* Several cards carried: one peeking out from under the other, and how many. */
+.drag-ghost__under {
+  position: absolute !important;
+  inset: 0;
+  transform: translate(8px, 6px) rotate(4deg);
+}
+
+.drag-ghost__count {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  box-sizing: border-box;
+  border-radius: 13px;
+  background: var(--accent);
+  color: var(--bg);
+  font: 600 13px/26px var(--ui);
+  text-align: center;
+}
+
 .drag-ghost--away {
   color: var(--accent);
   transform: rotate(2deg) scale(0.9);
@@ -1341,6 +1430,18 @@ body,
 
 .ui-menu__item--danger {
   color: var(--danger);
+}
+
+.ui-menu__swatch {
+  width: 12px;
+  height: 12px;
+  margin-left: 14px;
+  border-radius: 50%;
+}
+
+.ui-menu__swatch--none {
+  box-sizing: border-box;
+  border: 1.5px dashed var(--muted);
 }
 
 .ui-menu__chevron {

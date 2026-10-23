@@ -32,6 +32,13 @@ const THRESHOLD = 6;
 const EDGE = 70;
 const MAX_SCROLL = 18;
 
+/** Scroll speed for a pointer at `y`: faster the closer it is to the top or bottom edge of `box`. */
+export function edgeSpeed(y: number, box: DOMRect) {
+  if (y < box.top + EDGE) return -MAX_SCROLL * (1 - Math.max(0, y - box.top) / EDGE);
+  if (y > box.bottom - EDGE) return MAX_SCROLL * (1 - Math.max(0, box.bottom - y) / EDGE);
+  return 0;
+}
+
 /**
  * Drop targets are marked in the DOM: `data-drop="space"` with `data-space`
  * (and an optional `data-grid` of equally sized cells inside, whose first
@@ -100,13 +107,7 @@ export function useCardDrag<T>(scroller: RefObject<HTMLElement | null>, onDrop: 
         const d = live.current;
         // The dock sits in the bottom edge: reaching for it shouldn't scroll.
         if (!el || !d || d.over?.kind === "trash" || (d.over?.kind === "space" && d.over.dock)) return;
-        const box = el.getBoundingClientRect();
-        const speed =
-          d.y < box.top + EDGE
-            ? -MAX_SCROLL * (1 - Math.max(0, d.y - box.top) / EDGE)
-            : d.y > box.bottom - EDGE
-              ? MAX_SCROLL * (1 - Math.max(0, box.bottom - d.y) / EDGE)
-              : 0;
+        const speed = edgeSpeed(d.y, el.getBoundingClientRect());
         if (speed) {
           el.scrollTop += speed;
           update(d.x, d.y);

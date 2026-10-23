@@ -26,6 +26,8 @@ export type Settings = {
   profile?: Profile;
   /** Card order on the Welcome screen, per space ("local" or a server id), and per folder ("<space>/<folder>"). */
   canvasOrder?: Record<string, string[]>;
+  /** Colour of a card on the Welcome screen, by "<space>/<canvas or folder id>". */
+  cardColors?: Record<string, string>;
 };
 
 export type MenuAction = "new-canvas" | "go-home" | "import" | "save" | "connect" | "host";
@@ -190,6 +192,9 @@ export const desktop = {
    */
   move: (canvasId: string, name: string, from: string | null, to: string | null, folder?: string) =>
     invoke<CanvasMeta>("move_canvas", { canvasId, name, from, to, folder: folder ?? null }),
+  /** Copies a canvas, as `name`, into a space (null: this Mac; may be the one it's in), into `folder` there. */
+  copy: (canvasId: string, name: string, from: string | null, to: string | null, folder?: string) =>
+    invoke<CanvasMeta>("copy_canvas", { canvasId, name, from, to, folder: folder ?? null }),
 
   servers: {
     list: () => invoke<ServerInfo[]>("list_servers"),

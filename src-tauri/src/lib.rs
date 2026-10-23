@@ -558,6 +558,7 @@ pub fn run() {
             network::remote_delete_folder,
             network::remote_export,
             network::move_canvas,
+            network::copy_canvas,
             network::copy_text,
             network::user_full_name,
             network::remote_connect,

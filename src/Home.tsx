@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type MouseEvent,
   type PointerEvent,
@@ -25,7 +26,7 @@ import { AiConnectPanel, ConnectPanel, HostPanel, ProfilePanel, type Panel } fro
 import { ui, anchorOf, type Anchor, type MenuEntry } from "./ui";
 import { clientColor, initials } from "./colors";
 import { DrawnIcon, type IconName } from "./icons";
-import { useCardDrag, type CardDrag, type DropTarget } from "./cardDrag";
+import { edgeSpeed, useCardDrag, type CardDrag, type DropTarget } from "./cardDrag";
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -49,6 +50,21 @@ const LIST_POLL = 4000;
 const HOST_POLL = 2500;
 /** How long a card that just moved keeps wiggling in its new place. */
 const LANDED_FOR = 1600;
+/** How far the pointer moves before a press on the background starts a selection box. */
+const MARQUEE_THRESHOLD = 4;
+
+/** Colours a card can be painted: CSS has a light and a dark shade of each (`--card-<id>`). */
+const COLORS = [
+  ["red", "Red"],
+  ["orange", "Orange"],
+  ["yellow", "Yellow"],
+  ["green", "Green"],
+  ["teal", "Teal"],
+  ["blue", "Blue"],
+  ["violet", "Violet"],
+  ["pink", "Pink"],
+] as const;
+const colorVar = (color: string) => `var(--card-${color})`;
 
 /** Space ids: canvases on this Mac, the ones shared from it, or a joined server's id. */
 const LOCAL = "local";
@@ -76,7 +92,18 @@ type Space = {
   shown: Card[] | null;
 };
 
+/** Selected cards (canvases and folders), all in one space. */
+type Selection = { space: string; ids: string[] };
+
+type Box = { left: number; top: number; width: number; height: number };
+
 type RemoteList = { canvases: Card[] | null; folders: Folder[] | null; error: string | null };
+
+/** Cards copied with ⌘C: where from, and the text put on the clipboard, to recognise them by when pasting. */
+type Clip = { space: string; canvases: Card[]; folders: { folder: Folder; canvases: Card[] }[]; text: string };
+
+/** What was last copied. Outlives this screen, so it can be pasted after opening a canvas and coming back. */
+let clip: Clip | null = null;
 
 /** The folder open in each space. Outlives this screen, so coming back from a canvas lands in it again. */
 const openFolders: Record<string, string | undefined> = {};
@@ -92,6 +119,12 @@ const orderKey = (spaceId: string, folder: Folder | null) => (folder ? `${spaceI
 const byName = (a: Folder, b: Folder) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
 
 const message = (err: unknown) => String((err as Error)?.message ?? err);
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "3 canvases and 1 folder". */
+const describe = (canvases: number, folders: number) =>
+  [canvases && plural(canvases, "canvas", "canvases"), folders && plural(folders, "folder", "folders")].filter(Boolean).join(" and ");
 
 export function alertError(title: string, err: unknown) {
   ui.alert(title, message(err));
@@ -140,15 +173,27 @@ export function Home({
   const [order, setOrder] = useState<Record<string, string[]>>({});
   const [creatingIn, setCreatingIn] = useState<string | null>(null);
   /** Naming a new folder in a space, to file `canvas` in once it exists (from "Move to → New Folder…"). */
-  const [newFolder, setNewFolder] = useState<{ space: string; canvas?: Card } | null>(null);
+  const [newFolder, setNewFolder] = useState<{ space: string; canvases?: Card[] } | null>(null);
   const [openFolder, setOpenFolder] = useState(() => ({ ...openFolders }));
   /** A canvas or folder id. */
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [moving, setMoving] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string[]>([]);
   const [landed, setLanded] = useState<string | null>(null);
   const [fileDrag, setFileDrag] = useState(false);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  /** The selection box being drawn, on screen. */
+  const [marquee, setMarquee] = useState<Box | null>(null);
+  const [colors, setColors] = useState<Record<string, string>>({});
   const [, forceTick] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
+  /** The card last clicked, where a shift-click's run starts. */
+  const lastPicked = useRef<string | null>(null);
+  const colorsRef = useRef(colors);
+  const stopMarquee = useRef<(() => void) | null>(null);
+  const onKey = useRef<(e: KeyboardEvent) => void>(() => {});
+  const onPaste = useRef<(e: ClipboardEvent) => void>(() => {});
+  /** The space last worked in: where ⌘V pastes when nothing is selected. */
+  const activeSpace = useRef(LOCAL);
 
   const hostServer = servers.find((s) => s.isHost) ?? null;
   const joined = servers.filter((s) => !s.isHost);
@@ -184,7 +229,20 @@ export function Home({
   }, [refreshLocal, refreshServers, refreshKey]);
 
   useEffect(() => {
-    desktop.getSettings().then((s) => setOrder(s.canvasOrder ?? {}));
+    desktop.getSettings().then((s) => {
+      setOrder(s.canvasOrder ?? {});
+      colorsRef.current = s.cardColors ?? {};
+      setColors(colorsRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onKey.current(e);
+    window.addEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      stopMarquee.current?.();
+    };
   }, []);
 
   const serverIds = servers.map((s) => s.id).join(",");
@@ -228,18 +286,11 @@ export function Home({
     return () => clearTimeout(timer);
   }, [landed]);
 
-  // Pasting an invite link anywhere on this screen joins it.
   useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      if (panel || (e.target as HTMLElement).closest?.("input, textarea")) return;
-      const text = e.clipboardData?.getData("text").trim() ?? "";
-      if (!text.startsWith("drawlycool:")) return;
-      e.preventDefault();
-      setPanel({ kind: "connect", link: text, auto: Boolean(parseInvite(text)) });
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [panel, setPanel]);
+    const handler = (e: ClipboardEvent) => onPaste.current(e);
+    window.addEventListener("paste", handler);
+    return () => window.removeEventListener("paste", handler);
+  }, []);
 
   // ------------------------------------------------------------ spaces
 
@@ -269,6 +320,7 @@ export function Home({
     openFolders[spaceId] = folderId ?? undefined;
     setOpenFolder({ ...openFolders });
     setCreatingIn(null);
+    setSelection(null);
   };
 
   const saveOrder = (key: string, ids: string[]) => {
@@ -277,17 +329,201 @@ export function Home({
     desktop.setSettings({ canvasOrder: next });
   };
 
-  /** Puts a card at `index` among the cards a space shows, remembering the arrangement. */
-  const place = (space: Space, id: string, index: number | null) => {
-    const ids = (space.shown ?? []).map((c) => c.id).filter((other) => other !== id);
-    ids.splice(Math.min(index ?? 0, ids.length), 0, id);
+  /** Puts cards at `index` among the cards a space shows, remembering the arrangement. */
+  const place = (space: Space, moved: string[], index: number | null) => {
+    const ids = (space.shown ?? []).map((c) => c.id).filter((id) => !moved.includes(id));
+    ids.splice(Math.min(index ?? 0, ids.length), 0, ...moved);
     saveOrder(orderKey(space.id, space.folder), ids);
+  };
+
+  // ------------------------------------------------------------ colours
+
+  const colorOf = (spaceId: string, id: string) => colors[`${spaceId}/${id}`] ?? null;
+
+  const saveColors = (change: (all: Record<string, string>) => void) => {
+    const next = { ...colorsRef.current };
+    change(next);
+    colorsRef.current = next;
+    setColors(next);
+    desktop.setSettings({ cardColors: next });
+  };
+
+  /** Paints cards of a space, or makes them plain again (null). */
+  const paint = (spaceId: string, ids: string[], color: string | null) =>
+    saveColors((all) => {
+      for (const id of ids) {
+        if (color) all[`${spaceId}/${id}`] = color;
+        else delete all[`${spaceId}/${id}`];
+      }
+    });
+
+  const forget = (spaceId: string, ids: string[]) => paint(spaceId, ids, null);
+
+  const colorMenu = (): MenuEntry => ({
+    text: "Color",
+    items: [
+      { id: "color:", text: "None", swatch: "" },
+      "separator",
+      ...COLORS.map(([id, name]) => ({ id: `color:${id}`, text: name, swatch: colorVar(id) })),
+    ],
+  });
+
+  // ------------------------------------------------------------ selection
+
+  /** Ids of the cards a space shows (folders, then canvases), in order. */
+  const itemsOf = (space: Space) => [
+    ...(space.folder ? [] : (space.folders ?? [])).map((f) => f.id),
+    ...(space.shown ?? []).map((c) => c.id),
+  ];
+
+  /** The selected cards among the ones a space shows. */
+  const selectedIn = (space: Space) => {
+    if (selection?.space !== space.id) return [];
+    const shown = new Set(itemsOf(space));
+    return selection.ids.filter((id) => shown.has(id));
+  };
+
+  const picked = (space: Space) => {
+    const ids = new Set(selectedIn(space));
+    return {
+      canvases: (space.shown ?? []).filter((c) => ids.has(c.id)),
+      folders: (space.folder ? [] : (space.folders ?? [])).filter((f) => ids.has(f.id)),
+    };
+  };
+
+  /** ⌘-click on a card adds it to the selection or takes it out; shift-click adds the run from the last one clicked. */
+  const select = (space: Space, id: string, mods: { metaKey: boolean; shiftKey: boolean }) => {
+    activeSpace.current = space.id;
+    const current = selectedIn(space);
+    const items = itemsOf(space);
+    let ids = [id];
+    if (mods.metaKey) {
+      ids = current.includes(id) ? current.filter((other) => other !== id) : [...current, id];
+    } else if (mods.shiftKey && lastPicked.current && items.includes(lastPicked.current)) {
+      const [from, to] = [items.indexOf(lastPicked.current), items.indexOf(id)].sort((a, b) => a - b);
+      ids = [...new Set([...current, ...items.slice(from, to + 1)])];
+    }
+    if (!mods.shiftKey) lastPicked.current = id;
+    setSelection({ space: space.id, ids });
+  };
+
+  /** Dragging a card carries it, or every selected canvas if it's one of them. */
+  const press = (space: Space, event: PointerEvent<HTMLElement>, id: string, canvas?: Card) => {
+    if (event.button !== 0) return;
+    activeSpace.current = space.id;
+    const held = selectedIn(space).includes(id);
+    if (canvas && !space.paused) start(event, held ? picked(space).canvases : [canvas], space.id);
+  };
+
+  /** Right-click (or "…") on a card: about the whole selection if it's in one, else about just that card. */
+  const menuFor = (space: Space, id: string, anchor: Anchor, single: () => void) => {
+    activeSpace.current = space.id;
+    const current = selectedIn(space);
+    if (current.length > 1 && current.includes(id)) return showSelectionMenu(space, anchor);
+    single();
+  };
+
+  /** Dragging across the background draws a box; the cards it touches (in one space) get selected. */
+  const onBackgroundDown = (event: PointerEvent<HTMLDivElement>) => {
+    const el = scroller.current;
+    if (!el || event.button !== 0 || stopMarquee.current) return;
+    if ((event.target as HTMLElement).closest("button, input, textarea, a, [role=button], [data-select]")) return;
+    const frame = el.getBoundingClientRect();
+    if (event.clientX > frame.left + el.clientLeft + el.clientWidth) return; // on the scrollbar
+    // Where it started, in the scrolled content, so it stays put while scrolling.
+    const startX = event.clientX - frame.left + el.scrollLeft;
+    const startY = event.clientY - frame.top + el.scrollTop;
+    const startSpace = (event.target as HTMLElement).closest<HTMLElement>("[data-drop=space]")?.dataset.space;
+    if (startSpace) activeSpace.current = startSpace;
+    const base = event.metaKey || event.shiftKey ? selection : null;
+    let x = event.clientX;
+    let y = event.clientY;
+    let active = false;
+    let raf = 0;
+
+    const update = () => {
+      const box = el.getBoundingClientRect();
+      const sx = box.left + startX - el.scrollLeft;
+      const sy = box.top + startY - el.scrollTop;
+      const rect = { left: Math.min(sx, x), top: Math.min(sy, y), right: Math.max(sx, x), bottom: Math.max(sy, y) };
+      const left = Math.max(rect.left, box.left);
+      const top = Math.max(rect.top, box.top);
+      setMarquee({
+        left,
+        top,
+        width: Math.max(0, Math.min(rect.right, box.right) - left),
+        height: Math.max(0, Math.min(rect.bottom, box.bottom) - top),
+      });
+      const hits: { id: string; space: string }[] = [];
+      for (const card of el.querySelectorAll<HTMLElement>("[data-select]")) {
+        const r = card.getBoundingClientRect();
+        if (r.left < rect.right && r.right > rect.left && r.top < rect.bottom && r.bottom > rect.top) {
+          hits.push({ id: card.dataset.select!, space: card.dataset.selectSpace! });
+        }
+      }
+      const space = startSpace ?? hits[0]?.space ?? base?.space;
+      if (!space) return setSelection(null);
+      const ids = hits.filter((h) => h.space === space).map((h) => h.id);
+      setSelection({ space, ids: base?.space === space ? [...new Set([...base.ids, ...ids])] : ids });
+    };
+
+    // Near the top or bottom edge, keep scrolling so the box can grow past what's on screen.
+    const autoScroll = () => {
+      raf = requestAnimationFrame(autoScroll);
+      const speed = active ? edgeSpeed(y, el.getBoundingClientRect()) : 0;
+      if (speed) {
+        el.scrollTop += speed;
+        update();
+      }
+    };
+
+    const onMove = (e: { clientX: number; clientY: number }) => {
+      x = e.clientX;
+      y = e.clientY;
+      if (!active && Math.hypot(x - event.clientX, y - event.clientY) < MARQUEE_THRESHOLD) return;
+      active = true;
+      update();
+    };
+    const onScroll = () => active && update();
+    // A click on the background (no box) clears the selection.
+    const onUp = () => {
+      if (!active && !base) setSelection(null);
+      stop();
+    };
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+      el.removeEventListener("scroll", onScroll);
+      setMarquee(null);
+      stopMarquee.current = null;
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    el.addEventListener("scroll", onScroll);
+    raf = requestAnimationFrame(autoScroll);
+    stopMarquee.current = stop;
   };
 
   // ------------------------------------------------------------ actions
 
   const openIn = (space: Space, canvasId: string) =>
     space.server ? onOpenRemote(space.server, canvasId) : onOpen(canvasId);
+
+  const openCanvas = async (space: Space, canvas: Card) => {
+    // Shared canvases while sharing is off: turn it back on, then open.
+    if (space.paused) {
+      const host = await startSharing();
+      if (host) onOpenRemote(host, canvas.id);
+      return;
+    }
+    openIn(space, canvas.id);
+  };
 
   /** Turns sharing on; null (after saying why) if it couldn't start. */
   const startSharing = async () => {
@@ -332,34 +568,67 @@ export function Home({
     reload(space.id);
   };
 
-  const remove = async (space: Space, canvas: Card) => {
+  /** Deletes canvases and folders of a space; other canvases in those folders move back out of them. */
+  const remove = async (space: Space, cards: Card[], folders: Folder[] = []) => {
+    if (!cards.length && folders.length === 1) return removeFolder(space, folders[0]);
+    if (!cards.length && !folders.length) return;
+    const one = cards.length === 1 && !folders.length;
+    const doomed = new Set(cards.map((c) => c.id));
+    const emptied = new Set(folders.map((f) => f.id));
+    const orphans = (space.canvases ?? []).filter((c) => !doomed.has(c.id) && emptied.has(folderOf(space.folders, c) ?? "")).length;
     const ok = await ui.confirm({
-      title: `Delete “${canvas.name}”?`,
-      message: space.id === LOCAL ? "This can’t be undone." : "It’s deleted for everyone. This can’t be undone.",
+      title: one ? `Delete “${cards[0].name}”?` : `Delete ${describe(cards.length, folders.length)}?`,
+      message:
+        [
+          orphans &&
+            `The ${plural(orphans, "canvas", "canvases")} in ${folders.length === 1 ? "that folder" : "those folders"} ${
+              orphans === 1 ? "moves" : "move"
+            } back to ${space.title}.`,
+          cards.length &&
+            (space.id === LOCAL
+              ? "This can’t be undone."
+              : `${one ? "It’s" : "They’re"} deleted for everyone. This can’t be undone.`),
+        ]
+          .filter(Boolean)
+          .join(" ") || "They’re empty.",
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    try {
-      if (space.id === LOCAL) await desktop.remove(canvas.id);
-      else await desktop.remote.remove(space.id, canvas.id);
-    } catch (err) {
-      alertError(`Couldn’t delete “${canvas.name}”`, err);
+    for (const canvas of cards) {
+      try {
+        if (space.id === LOCAL) await desktop.remove(canvas.id);
+        else await desktop.remote.remove(space.id, canvas.id);
+      } catch (err) {
+        alertError(`Couldn’t delete “${canvas.name}”`, err);
+      }
     }
+    for (const folder of folders) {
+      try {
+        if (space.id === LOCAL) await desktop.folders.remove(folder.id);
+        else await desktop.remote.folders.remove(space.id, folder.id);
+      } catch (err) {
+        alertError(`Couldn’t delete “${folder.name}”`, err);
+      }
+    }
+    forget(space.id, [...doomed, ...emptied]);
+    setSelection(null);
     reload(space.id);
   };
 
-  /** Moves a canvas to another space: into `folder` there, by default the one open in it. */
-  const move = async (canvas: Card, from: Space, to: Space, index: number | null, folder = to.folder?.id ?? null) => {
+  /** Moves canvases to another space: into `folder` there, by default the one open in it. */
+  const move = async (cards: Card[], from: Space, to: Space, index: number | null, folder = to.folder?.id ?? null) => {
+    if (!cards.length) return;
     if (to.error) return ui.alert(`Can’t reach ${to.title} right now`, to.error);
+    const one = cards.length === 1;
     const toFriend = to.id !== LOCAL && to.id !== HOST;
-    // Someone else's server, or people may be drawing in it: check first.
-    if (toFriend || (from.id !== LOCAL && (from.id !== HOST || canvas.peers?.length))) {
+    // Someone else's server, or people may be drawing in them: check first.
+    if (toFriend || (from.id !== LOCAL && (from.id !== HOST || cards.some((c) => c.peers?.length)))) {
       const ok = await ui.confirm({
-        title: `Move “${canvas.name}” to ${to.title}?`,
+        title: `Move ${one ? `“${cards[0].name}”` : plural(cards.length, "canvas", "canvases")} to ${to.title}?`,
         message: [
-          toFriend && `Everyone on ${to.title} can open and edit it.`,
-          from.id !== LOCAL && `It disappears from ${from.title} for everyone.`,
+          toFriend && `Everyone on ${to.title} can open and edit ${one ? "it" : "them"}.`,
+          from.id !== LOCAL && `${one ? "It disappears" : "They disappear"} from ${from.title} for everyone.`,
         ]
           .filter(Boolean)
           .join(" "),
@@ -367,66 +636,88 @@ export function Home({
       });
       if (!ok) return;
     }
-    setMoving(canvas.id);
+    setMoving(cards.map((c) => c.id));
+    const copies: string[] = [];
     try {
       if (to.id === HOST && to.paused && !(await startSharing())) return;
-      const copy = await desktop.move(
-        canvas.id,
-        canvas.name,
-        from.id === LOCAL ? null : from.id,
-        to.id === LOCAL ? null : to.id,
-        folder ?? undefined,
-      );
+      for (const canvas of cards) {
+        try {
+          const copy = await desktop.move(
+            canvas.id,
+            canvas.name,
+            from.id === LOCAL ? null : from.id,
+            to.id === LOCAL ? null : to.id,
+            folder ?? undefined,
+          );
+          copies.push(copy.id);
+          const color = colorOf(from.id, canvas.id);
+          if (color) {
+            saveColors((all) => {
+              all[`${to.id}/${copy.id}`] = color;
+              delete all[`${from.id}/${canvas.id}`];
+            });
+          }
+        } catch (err) {
+          alertError(`Couldn’t move “${canvas.name}”`, err);
+          break;
+        }
+      }
       await Promise.all([reload(from.id), reload(to.id)]);
+      if (!copies.length) return;
       if (folder === (to.folder?.id ?? null)) {
-        place(to, copy.id, index);
-        setLanded(copy.id);
+        place(to, copies, index);
+        setLanded(copies[0]);
+        setSelection({ space: to.id, ids: copies });
       } else {
         setLanded(folder);
       }
     } catch (err) {
-      alertError(`Couldn’t move “${canvas.name}”`, err);
+      alertError("Couldn’t move", err);
     } finally {
-      setMoving(null);
+      setMoving([]);
     }
   };
 
-  /** Files a canvas in a folder of its space, or takes it out (null). */
-  const file = async (space: Space, canvas: Card, folder: string | null) => {
-    if (folderOf(space.folders, canvas) === folder) return;
-    setMoving(canvas.id);
+  /** Files canvases in a folder of their space, or takes them out (null). */
+  const file = async (space: Space, cards: Card[], folder: string | null) => {
+    const todo = cards.filter((c) => folderOf(space.folders, c) !== folder);
+    if (!todo.length) return;
+    setMoving(todo.map((c) => c.id));
     try {
-      if (space.id === LOCAL) await desktop.setFolder(canvas.id, folder);
-      else await desktop.remote.setFolder(space.id, canvas.id, folder);
+      for (const canvas of todo) {
+        if (space.id === LOCAL) await desktop.setFolder(canvas.id, folder);
+        else await desktop.remote.setFolder(space.id, canvas.id, folder);
+      }
       await reload(space.id);
-      setLanded(folder ?? canvas.id);
+      setLanded(folder ?? todo[0].id);
     } catch (err) {
-      alertError(`Couldn’t move “${canvas.name}”`, err);
+      alertError(todo.length === 1 ? `Couldn’t move “${todo[0].name}”` : "Couldn’t move the canvases", err);
+      reload(space.id);
     } finally {
-      setMoving(null);
+      setMoving([]);
     }
   };
 
-  const onDrop = (canvas: Card, fromId: string, target: DropTarget) => {
+  const onDrop = (cards: Card[], fromId: string, target: DropTarget) => {
     const from = spaceOf(fromId);
-    if (target.kind === "trash") return remove(from, canvas);
+    if (target.kind === "trash") return remove(from, cards);
     if (target.kind === "folder") {
-      if (target.space === fromId) return file(from, canvas, target.folder);
-      return move(canvas, from, spaceOf(target.space), null, target.folder);
+      if (target.space === fromId) return file(from, cards, target.folder);
+      return move(cards, from, spaceOf(target.space), null, target.folder);
     }
-    if (target.space !== fromId) return move(canvas, from, spaceOf(target.space), target.index);
-    if (target.index !== null) place(from, canvas.id, target.index);
+    if (target.space !== fromId) return move(cards, from, spaceOf(target.space), target.index);
+    if (target.index !== null) place(from, cards.map((c) => c.id), target.index);
   };
 
   // ------------------------------------------------------------ folders
 
-  const createFolder = async (space: Space, name: string, canvas?: Card) => {
+  const createFolder = async (space: Space, name: string, canvases: Card[] = []) => {
     setNewFolder(null);
     if (!name.trim()) return;
     try {
       const folder =
         space.id === LOCAL ? await desktop.folders.create(name) : await desktop.remote.folders.create(space.id, name);
-      if (canvas) {
+      for (const canvas of canvases) {
         if (space.id === LOCAL) await desktop.setFolder(canvas.id, folder.id);
         else await desktop.remote.setFolder(space.id, canvas.id, folder.id);
       }
@@ -439,9 +730,9 @@ export function Home({
   };
 
   /** Starts naming a new folder at the top level of a space. */
-  const startNewFolder = (space: Space, canvas?: Card) => {
+  const startNewFolder = (space: Space, canvases?: Card[]) => {
     enter(space.id, null);
-    setNewFolder({ space: space.id, canvas });
+    setNewFolder({ space: space.id, canvases });
   };
 
   const renameFolder = async (space: Space, folder: Folder, name: string) => {
@@ -476,20 +767,31 @@ export function Home({
       alertError(`Couldn’t delete “${folder.name}”`, err);
     }
     if (space.folder?.id === folder.id) enter(space.id, null);
+    forget(space.id, [folder.id]);
     reload(space.id);
   };
 
   const showFolderMenu = async (space: Space, folder: Folder, anchor: Anchor) => {
     const action = await ui.menu(
-      [{ id: "open", text: "Open" }, "separator", { id: "rename", text: "Rename…" }, "separator", { id: "delete", text: "Delete Folder…" }],
+      [
+        { id: "open", text: "Open" },
+        "separator",
+        { id: "rename", text: "Rename…" },
+        { id: "copy", text: "Copy" },
+        colorMenu(),
+        "separator",
+        { id: "delete", text: "Delete Folder…" },
+      ],
       anchor,
     );
+    if (action?.startsWith("color:")) paint(space.id, [folder.id], action.slice(6) || null);
     if (action === "open") enter(space.id, folder.id);
+    if (action === "copy") copy(space, [], [folder]);
     if (action === "rename") setRenaming(folder.id);
     if (action === "delete") removeFolder(space, folder);
   };
 
-  const { drag, start } = useCardDrag<Card>(scroller, onDrop);
+  const { drag, start } = useCardDrag<Card[]>(scroller, onDrop);
 
   const copyInvite = async (serverId: string, canvasId?: string) => {
     try {
@@ -501,26 +803,66 @@ export function Home({
     }
   };
 
-  const showCardMenu = async (space: Space, canvas: Card, anchor: Anchor) => {
-    const current = folderOf(space.folders, canvas);
+  /** "Move to" entries for canvases of a space: its folders, out of theirs, a new folder, the other spaces. */
+  const destinations = (space: Space, canvases: Card[]): MenuEntry[] => {
+    const homes = new Set(canvases.map((c) => folderOf(space.folders, c)));
+    const current = homes.size === 1 ? [...homes][0] : null;
     const inFolders: MenuEntry[] = space.folders
       ? [
           ...space.folders.filter((f) => f.id !== current).map((f) => ({ id: `file:${f.id}`, text: f.name })),
-          ...(current ? [{ id: "file:", text: `Out of “${space.folders.find((f) => f.id === current)?.name}”` }] : []),
+          ...(current
+            ? [{ id: "file:", text: `Out of “${space.folders.find((f) => f.id === current)?.name}”` }]
+            : [...homes].some(Boolean)
+              ? [{ id: "file:", text: "Out of Folders" }]
+              : []),
           { id: "new-folder", text: "New Folder…" },
         ]
       : [];
     const elsewhere: MenuEntry[] = spaces
       .filter((s) => s.id !== space.id)
       .map((s) => ({ id: `move:${s.id}`, text: s.title, enabled: !s.error }));
-    const destinations: MenuEntry[] = [...inFolders, ...(inFolders.length && elsewhere.length ? ["separator" as const] : []), ...elsewhere];
+    return [...inFolders, ...(inFolders.length && elsewhere.length ? ["separator" as const] : []), ...elsewhere];
+  };
+
+  /** Carries out a pick from `destinations`; false if it wasn't one. */
+  const moveTo = (action: string, space: Space, canvases: Card[]) => {
+    if (action.startsWith("move:")) move(canvases, space, spaceOf(action.slice(5)), 0);
+    else if (action.startsWith("file:")) file(space, canvases, action.slice(5) || null);
+    else if (action === "new-folder") startNewFolder(space, canvases);
+    else return false;
+    return true;
+  };
+
+  const showSelectionMenu = async (space: Space, anchor: Anchor) => {
+    const { canvases, folders } = picked(space);
+    const action = await ui.menu(
+      [
+        { id: "copy", text: "Copy" },
+        colorMenu(),
+        ...(canvases.length
+          ? [{ text: folders.length ? `Move ${plural(canvases.length, "Canvas", "Canvases")} to` : "Move to", items: destinations(space, canvases) }]
+          : []),
+        "separator",
+        { id: "delete", text: `Delete ${describe(canvases.length, folders.length)}…` },
+      ],
+      anchor,
+    );
+    if (!action || moveTo(action, space, canvases)) return;
+    if (action.startsWith("color:")) paint(space.id, [...folders, ...canvases].map((c) => c.id), action.slice(6) || null);
+    if (action === "copy") copy(space, canvases, folders);
+    if (action === "delete") remove(space, canvases, folders);
+  };
+
+  const showCardMenu = async (space: Space, canvas: Card, anchor: Anchor) => {
     const action = await ui.menu(
       [
         { id: "open", text: "Open" },
         "separator",
         { id: "rename", text: "Rename…" },
+        { id: "copy", text: "Copy" },
         { id: "duplicate", text: "Duplicate" },
-        { text: "Move to", items: destinations },
+        colorMenu(),
+        { text: "Move to", items: destinations(space, [canvas]) },
         ...(space.server
           ? [
               { id: "invite", text: "Copy Invite Link" },
@@ -534,15 +876,16 @@ export function Home({
       ],
       anchor,
     );
-    if (action?.startsWith("move:")) return move(canvas, space, spaceOf(action.slice(5)), 0);
-    if (action?.startsWith("file:")) return file(space, canvas, action.slice(5) || null);
-    if (action === "new-folder") return startNewFolder(space, canvas);
+    if (!action || moveTo(action, space, [canvas])) return;
+    if (action.startsWith("color:")) return paint(space.id, [canvas.id], action.slice(6) || null);
     try {
       switch (action) {
         case "open":
           return openIn(space, canvas.id);
         case "rename":
           return setRenaming(canvas.id);
+        case "copy":
+          return copy(space, [canvas]);
         case "duplicate":
           if (space.id === LOCAL) await desktop.duplicate(canvas.id);
           else await desktop.remote.duplicate(space.id, canvas.id);
@@ -557,7 +900,7 @@ export function Home({
         case "reveal":
           return desktop.reveal(canvas.id);
         case "delete":
-          return remove(space, canvas);
+          return remove(space, [canvas]);
       }
     } catch (err) {
       alertError("Something went wrong", err);
@@ -575,6 +918,133 @@ export function Home({
     if (!ok) return;
     await desktop.servers.remove(space.id);
     refreshServers();
+  };
+
+  // ------------------------------------------------------------ copy and paste
+
+  /** Copies cards of a space, to paste with ⌘V. Their names go on the clipboard too, which is how a paste recognises them. */
+  const copy = async (space: Space, canvases: Card[], folders: Folder[] = []) => {
+    if (space.paused || (!canvases.length && !folders.length)) return;
+    const text = [...folders, ...canvases].map((c) => c.name).join("\n");
+    clip = {
+      space: space.id,
+      canvases,
+      folders: folders.map((folder) => ({
+        folder,
+        canvases: (space.canvases ?? []).filter((c) => folderOf(space.folders, c) === folder.id),
+      })),
+      text,
+    };
+    try {
+      await desktop.copyText(text);
+    } catch (err) {
+      alertError("Couldn’t copy", err);
+    }
+  };
+
+  /** Pastes copied cards into a space: canvases into the folder open there, folders (with their canvases) at its top level. */
+  const paste = async (copied: Clip, to: Space) => {
+    const from = spaces.find((s) => s.id === copied.space);
+    if (!from) return ui.alert("Couldn’t paste", "The canvases were copied from a server you’ve since left.");
+    if (from.error) return ui.alert(`Can’t reach ${from.title} right now`, from.error);
+    if (to.error) return ui.alert(`Can’t reach ${to.title} right now`, to.error);
+    if (to.id === HOST && to.paused && !(await startSharing())) return;
+    // Next to the originals, copies are told apart by name.
+    const named = (name: string) => (from.id === to.id ? `${name} copy` : name);
+    const pasted: string[] = [];
+    const paste1 = async (canvas: Card, name: string, folder: string | null) => {
+      const made = await desktop.copy(
+        canvas.id,
+        name,
+        from.id === LOCAL ? null : from.id,
+        to.id === LOCAL ? null : to.id,
+        folder ?? undefined,
+      );
+      const color = colorOf(from.id, canvas.id);
+      if (color) paint(to.id, [made.id], color);
+      return made.id;
+    };
+    try {
+      for (const { folder, canvases } of copied.folders) {
+        if (!to.folders) {
+          // A server without folders: just the canvases.
+          for (const canvas of canvases) pasted.push(await paste1(canvas, canvas.name, null));
+          continue;
+        }
+        const made =
+          to.id === LOCAL
+            ? await desktop.folders.create(named(folder.name))
+            : await desktop.remote.folders.create(to.id, named(folder.name));
+        const color = colorOf(from.id, folder.id);
+        if (color) paint(to.id, [made.id], color);
+        pasted.push(made.id);
+        for (const canvas of canvases) await paste1(canvas, canvas.name, made.id);
+      }
+      for (const canvas of copied.canvases) pasted.push(await paste1(canvas, named(canvas.name), to.folder?.id ?? null));
+    } catch (err) {
+      alertError("Couldn’t paste everything", err);
+    }
+    await reload(to.id);
+    if (pasted.length) {
+      setSelection({ space: to.id, ids: pasted });
+      setLanded(pasted[0]);
+    }
+  };
+
+  /** Where ⌘V pastes: the space with the selection, else the one last worked in. */
+  const pasteTarget = () => spaces.find((s) => s.id === (selection?.space ?? activeSpace.current)) ?? spaceOf(LOCAL);
+
+  // Pasting copied cards anywhere on this screen pastes them; pasting an invite link joins it.
+  onPaste.current = (e) => {
+    if (panel || ui.isOpen() || (e.target as HTMLElement).closest?.("input, textarea")) return;
+    const text = e.clipboardData?.getData("text").trim() ?? "";
+    if (clip && text === clip.text.trim()) {
+      e.preventDefault();
+      paste(clip, pasteTarget());
+      return;
+    }
+    if (!text.startsWith("drawlycool:")) return;
+    e.preventDefault();
+    setPanel({ kind: "connect", link: text, auto: Boolean(parseInvite(text)) });
+  };
+
+  /** Right-click on a space's background: paste there. */
+  const onBackgroundMenu = async (event: MouseEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button, input, textarea, a, [role=button], [data-select]")) return;
+    const id = (event.target as HTMLElement).closest<HTMLElement>("[data-drop=space]")?.dataset.space;
+    const space = spaces.find((s) => s.id === id);
+    if (!space) return;
+    event.preventDefault();
+    activeSpace.current = space.id;
+    const action = await ui.menu([{ id: "paste", text: "Paste", enabled: clip !== null && !space.error }], anchorOf(event));
+    if (action === "paste" && clip) paste(clip, space);
+  };
+
+  // ⌘A selects everything a space shows, Escape nothing, ⌘C copies; Delete and Enter act on the selection.
+  onKey.current = (e) => {
+    if (panel || drag || ui.isOpen() || (e.target as HTMLElement).closest?.("input, textarea")) return;
+    const space = selection && spaces.find((s) => s.id === selection.space);
+    if (e.key === "a" && e.metaKey) {
+      e.preventDefault();
+      const target = space ?? spaceOf(LOCAL);
+      setSelection({ space: target.id, ids: itemsOf(target) });
+      return;
+    }
+    if (!space) return;
+    const { canvases, folders } = picked(space);
+    if (e.key === "Escape") {
+      setSelection(null);
+    } else if (e.key === "c" && e.metaKey) {
+      e.preventDefault();
+      copy(space, canvases, folders);
+    } else if ((e.key === "Backspace" || e.key === "Delete") && !space.paused) {
+      e.preventDefault();
+      remove(space, canvases, folders);
+    } else if (e.key === "Enter" && canvases.length + folders.length === 1) {
+      e.preventDefault();
+      if (folders.length) enter(space.id, folders[0].id);
+      else openCanvas(space, canvases[0]);
+    }
   };
 
   // ------------------------------------------------------------ files from Finder
@@ -669,24 +1139,25 @@ export function Home({
         onNew={() => setCreatingIn(space.id)}
         onCreate={(name) => create(space, name)}
         onCancelCreate={() => setCreatingIn(null)}
-        onCreateFolder={(name) => createFolder(space, name, newFolder?.canvas)}
+        onCreateFolder={(name) => createFolder(space, name, newFolder?.canvases)}
         onCancelCreateFolder={() => setNewFolder(null)}
         onOpenFolder={(folder) => enter(space.id, folder.id)}
-        onFolderMenu={space.paused ? undefined : (folder, anchor) => showFolderMenu(space, folder, anchor)}
+        selected={selectedIn(space)}
+        colorOf={(id) => colorOf(space.id, id)}
+        onSelect={(id, mods) => select(space, id, mods)}
+        onPress={(e, id, canvas) => press(space, e, id, canvas)}
+        onFolderMenu={
+          space.paused
+            ? undefined
+            : (folder, anchor) => menuFor(space, folder.id, anchor, () => showFolderMenu(space, folder, anchor))
+        }
         onRenameFolder={(folder, name) => renameFolder(space, folder, name)}
         onRename={(id, name) => rename(space, id, name)}
         onCancelRename={() => setRenaming(null)}
-        onOpen={async (canvas) => {
-          // Shared canvases while sharing is off: turn it back on, then open.
-          if (space.paused) {
-            const host = await startSharing();
-            if (host) onOpenRemote(host, canvas.id);
-            return;
-          }
-          openIn(space, canvas.id);
-        }}
-        onMenu={space.paused ? undefined : (canvas, anchor) => showCardMenu(space, canvas, anchor)}
-        onGrab={space.paused ? undefined : (e, canvas) => start(e, canvas, space.id)}
+        onOpen={(canvas) => openCanvas(space, canvas)}
+        onMenu={
+          space.paused ? undefined : (canvas, anchor) => menuFor(space, canvas.id, anchor, () => showCardMenu(space, canvas, anchor))
+        }
       />
     );
   };
@@ -706,7 +1177,7 @@ export function Home({
       onDrop={onFileDrop}
     >
       <RoughBox seed={7} radius={32} className="home__frame">
-        <div className="home__scroll" ref={scroller}>
+        <div className="home__scroll" ref={scroller} onPointerDown={onBackgroundDown} onContextMenu={onBackgroundMenu}>
           <div className="home__toolbar">
             <button className="tool-button" onClick={() => setPanel({ kind: "connect" })} title="Join a friend’s canvases">
               <RoughBox seed={22} radius={14} className="tool-button__box">
@@ -767,6 +1238,7 @@ export function Home({
       </RoughBox>
 
       {drag && <DragLayer drag={drag} spaces={spaces} />}
+      {marquee && <div className="marquee" style={marquee} />}
 
       {panel?.kind === "connect" && (
         <ConnectPanel
@@ -920,14 +1392,21 @@ function ShareZone({ over, onClick }: { over: boolean; onClick: () => void }) {
 
 // ------------------------------------------------------------------ cards
 
+type Mods = { metaKey: boolean; shiftKey: boolean };
+
 type GridProps = {
   space: Space;
-  drag: CardDrag<Card> | null;
+  drag: CardDrag<Card[]> | null;
   creating: boolean;
   creatingFolder: boolean;
   renaming: string | null;
-  moving: string | null;
+  moving: string[];
   landed: string | null;
+  selected: string[];
+  colorOf: (id: string) => string | null;
+  onSelect: (id: string, mods: Mods) => void;
+  /** A press on a card, which may start dragging it (canvases only). */
+  onPress: (event: PointerEvent<HTMLElement>, id: string, canvas?: Card) => void;
   onNew: () => void;
   onCreate: (name: string) => void;
   onCancelCreate: () => void;
@@ -937,7 +1416,6 @@ type GridProps = {
   onCancelRename: () => void;
   onOpen: (canvas: Card) => void;
   onMenu?: (canvas: Card, anchor: Anchor) => void;
-  onGrab?: (event: PointerEvent<HTMLElement>, canvas: Card) => void;
   onOpenFolder: (folder: Folder) => void;
   onFolderMenu?: (folder: Folder, anchor: Anchor) => void;
   onRenameFolder: (folder: Folder, name: string) => void;
@@ -956,20 +1434,22 @@ function CardGrid({
   onCancelCreate,
   onCreateFolder,
   onCancelCreateFolder,
+  selected,
+  colorOf,
   ...card
 }: GridProps) {
   const ref = useRef<HTMLDivElement>(null);
   useFlip(ref);
 
-  // While a card is carried, leave a gap where it would land.
+  // While cards are carried, leave a gap where they would land.
   const all = space.shown ?? [];
-  const carried = drag?.from === space.id ? drag.item.id : null;
-  const items: (Card | "gap")[] = all.filter((c) => c.id !== carried);
+  const carried = new Set(drag?.from === space.id ? drag.item.map((c) => c.id) : []);
+  const items: (Card | "gap")[] = all.filter((c) => !carried.has(c.id));
   const over = drag?.over;
   if (drag && over?.kind === "space" && over.space === space.id && over.index !== null) {
     items.splice(Math.min(over.index, items.length), 0, "gap");
-  } else if (carried && (!over || ((over.kind === "space" || over.kind === "folder") && over.space === space.id))) {
-    items.splice(all.findIndex((c) => c.id === carried), 0, "gap");
+  } else if (carried.size && (!over || ((over.kind === "space" || over.kind === "folder") && over.space === space.id))) {
+    items.splice(all.findIndex((c) => carried.has(c.id)), 0, "gap");
   }
 
   // Folders come first, at the top level only.
@@ -1012,6 +1492,10 @@ function CardGrid({
             count={counts.get(f.id) ?? 0}
             over={over?.kind === "folder" && over.space === space.id && over.folder === f.id}
             landed={landed === f.id}
+            selected={selected.includes(f.id)}
+            color={colorOf(f.id)}
+            onSelect={(mods) => card.onSelect(f.id, mods)}
+            onPress={(e) => card.onPress(e, f.id)}
             onOpen={() => card.onOpenFolder(f)}
             onMenu={card.onFolderMenu && ((anchor) => card.onFolderMenu!(f, anchor))}
           />
@@ -1027,13 +1511,17 @@ function CardGrid({
         ) : (
           <CanvasCard
             key={c.id}
+            space={space.id}
             canvas={c}
             paused={space.paused}
-            moving={moving === c.id}
+            moving={moving.includes(c.id)}
             landed={landed === c.id}
+            selected={selected.includes(c.id)}
+            color={colorOf(c.id)}
+            onSelect={(mods) => card.onSelect(c.id, mods)}
+            onPress={(e) => card.onPress(e, c.id, c)}
             onOpen={() => card.onOpen(c)}
             onMenu={card.onMenu && ((anchor) => card.onMenu!(c, anchor))}
-            onGrab={card.onGrab && ((e) => card.onGrab!(e, c))}
           />
         ),
       )}
@@ -1078,13 +1566,27 @@ function NewCard({ seed, onClick }: { seed: number; onClick: () => void }) {
   );
 }
 
-/** A folder: opens on click, and takes canvases dropped onto it. */
+/** Classes and colour shared by every kind of card button. */
+function cardLook(selected: boolean, color: string | null, ...more: (string | false)[]) {
+  return {
+    className: ["card-button", selected && "card-button--selected", color && "card-button--colored", ...more]
+      .filter(Boolean)
+      .join(" "),
+    style: color ? ({ "--card-color": colorVar(color) } as CSSProperties) : undefined,
+  };
+}
+
+/** A folder: opens on click (⌘/shift-click selects), and takes canvases dropped onto it. */
 function FolderCard({
   space,
   folder,
   count,
   over,
   landed,
+  selected,
+  color,
+  onSelect,
+  onPress,
   onOpen,
   onMenu,
 }: {
@@ -1093,6 +1595,10 @@ function FolderCard({
   count: number;
   over: boolean;
   landed: boolean;
+  selected: boolean;
+  color: string | null;
+  onSelect: (mods: Mods) => void;
+  onPress: (event: PointerEvent<HTMLElement>) => void;
   onOpen: () => void;
   onMenu?: (anchor: Anchor) => void;
 }) {
@@ -1101,17 +1607,21 @@ function FolderCard({
     if (landed) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [landed]);
 
-  const classes = ["card-button", "card-button--folder", over && "card-button--over", landed && "card-button--landed"];
   return (
     <button
       ref={ref}
-      className={classes.filter(Boolean).join(" ")}
+      {...cardLook(selected, color, "card-button--folder", over && "card-button--over", landed && "card-button--landed")}
       data-flip={folder.id}
       data-drop="folder"
       data-space={space}
       data-folder={folder.id}
+      data-select={folder.id}
+      data-select-space={space}
       title={folder.name}
-      onClick={onOpen}
+      onClick={(e) => (e.metaKey || e.shiftKey ? onSelect(e) : onOpen())}
+      onPointerDown={(e) => {
+        if (!(e.target as HTMLElement).closest(".card__more")) onPress(e);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu?.(anchorOf(e));
@@ -1140,39 +1650,49 @@ function FolderCard({
   );
 }
 
+/** A canvas: opens on click (⌘/shift-click selects), and can be dragged around. */
 function CanvasCard({
+  space,
   canvas,
   paused,
   moving,
   landed,
+  selected,
+  color,
+  onSelect,
+  onPress,
   onOpen,
   onMenu,
-  onGrab,
 }: {
+  space: string;
   canvas: Card;
   paused: boolean;
   moving: boolean;
   landed: boolean;
+  selected: boolean;
+  color: string | null;
+  onSelect: (mods: Mods) => void;
+  onPress: (event: PointerEvent<HTMLElement>) => void;
   onOpen: () => void;
   onMenu?: (anchor: Anchor) => void;
-  onGrab?: (event: PointerEvent<HTMLElement>) => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (landed) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [landed]);
 
-  const classes = ["card-button", landed && "card-button--landed", paused && "card-button--paused", moving && "card-button--moving"];
   return (
     <button
       ref={ref}
-      className={classes.filter(Boolean).join(" ")}
+      {...cardLook(selected, color, landed && "card-button--landed", paused && "card-button--paused", moving && "card-button--moving")}
       data-flip={canvas.id}
+      data-select={canvas.id}
+      data-select-space={space}
       title={paused ? `${canvas.name}: opens and turns sharing back on` : canvas.name}
       disabled={moving}
-      onClick={onOpen}
+      onClick={(e) => (e.metaKey || e.shiftKey ? onSelect(e) : onOpen())}
       onPointerDown={(e) => {
-        if (!(e.target as HTMLElement).closest(".card__more")) onGrab?.(e);
+        if (!(e.target as HTMLElement).closest(".card__more")) onPress(e);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -1219,7 +1739,7 @@ function PeerStack({ peers }: { peers: Peer[] }) {
 // ------------------------------------------------------------------ while dragging
 
 /** The card under the pointer, and a dock of every other place it can go (plus the trash). */
-function DragLayer({ drag, spaces }: { drag: CardDrag<Card>; spaces: Space[] }) {
+function DragLayer({ drag, spaces }: { drag: CardDrag<Card[]>; spaces: Space[] }) {
   const over = drag.over;
   const overTrash = over?.kind === "trash";
   const elsewhere = over?.kind === "space" && over.space !== drag.from;
@@ -1237,9 +1757,11 @@ function DragLayer({ drag, spaces }: { drag: CardDrag<Card>; spaces: Space[] }) 
           transformOrigin: `${drag.grabX}px ${drag.grabY}px`,
         }}
       >
-        <RoughBox seed={seedFrom(drag.item.id)} className="card">
-          <span className="card__name">{drag.item.name}</span>
+        {drag.item.length > 1 && <RoughBox seed={seedFrom(drag.item[1].id)} className="card drag-ghost__under" />}
+        <RoughBox seed={seedFrom(drag.item[0].id)} className="card">
+          <span className="card__name">{drag.item[0].name}</span>
         </RoughBox>
+        {drag.item.length > 1 && <span className="drag-ghost__count">{drag.item.length}</span>}
       </div>
       <div className="dock">
         {spaces

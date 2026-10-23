@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { RoughBox } from "./RoughBox";
 
 export type MenuEntry =
-  | { id: string; text: string; enabled?: boolean }
+  | { id: string; text: string; enabled?: boolean; swatch?: string }
   | { text: string; items: MenuEntry[]; enabled?: boolean }
   | "separator";
 
@@ -45,6 +45,8 @@ function dismiss() {
 }
 
 export const ui = {
+  /** Whether a menu or dialog is showing. */
+  isOpen: () => layer !== null,
   /** Opens a context menu; resolves with the chosen id, or null if dismissed. */
   menu(entries: MenuEntry[], anchor: Anchor): Promise<string | null> {
     dismiss();
@@ -148,6 +150,12 @@ function MenuItems({ entries, onPick }: { entries: MenuEntry[]; onPick: (id: str
             onClick={() => onPick(entry.id)}
           >
             {entry.text}
+            {entry.swatch !== undefined && (
+              <span
+                className={`ui-menu__swatch${entry.swatch ? "" : " ui-menu__swatch--none"}`}
+                style={entry.swatch ? { background: entry.swatch } : undefined}
+              />
+            )}
           </button>
         );
       })}
